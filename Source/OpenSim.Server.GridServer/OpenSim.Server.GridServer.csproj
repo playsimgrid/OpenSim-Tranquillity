@@ -17,6 +17,22 @@
   <ItemGroup>
     <ProjectReference Include="../../Addons/OpenSim.Addons.Groups/OpenSim.Addons.Groups.csproj" />
     <ProjectReference Include="../../Addons/OpenSim.Addons.OfflineIM/OpenSim.Addons.OfflineIM.csproj" />
+    <!--
+      os-webrtc-janus, ROBUST half. Referenced rather than staged so a release tree
+      cannot be built without it - the previous arrangement referenced only
+      WebRtcVoiceRegionModule from RegionServer, which is why every published
+      GridServer tree so far has shipped zero WebRtc assemblies and both documented
+      voice configurations were impossible.
+        WebRtcVoice              holds WebRtcVoiceServerConnector : IServiceConnector,
+                                 the class named in the [ServiceList] entry.
+        WebRtcVoiceServiceModule that connector's LocalServiceModule default; it
+                                 loads it by name and casts it to ISharedRegionModule.
+                                 Needed on BOTH sides, not just the region.
+        WebRtcJanusService       the assembly that actually talks to Janus.
+    -->
+    <ProjectReference Include="../../Addons/os-webrtc-janus/WebRtcVoice/WebRtcVoice.csproj" />
+    <ProjectReference Include="../../Addons/os-webrtc-janus/WebRtcVoiceServiceModule/WebRtcVoiceServiceModule.csproj" />
+    <ProjectReference Include="../../Addons/os-webrtc-janus/Janus/WebRtcJanusService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Capabilities.Handlers/OpenSim.Capabilities.Handlers.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Capabilities/OpenSim.Capabilities.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Data/OpenSim.Data.csproj" />

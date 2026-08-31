@@ -78,7 +78,22 @@
     <ProjectReference Include="../../Source/OpenSim.Region.PhysicsModules.ubODEMeshing/OpenSim.Region.PhysicsModules.ubODEMeshing.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Region.ScriptEngine.Shared/OpenSim.Region.ScriptEngine.Shared.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Region.ScriptEngine.YEngine/OpenSim.Region.ScriptEngine.YEngine.csproj" />
+    <!--
+      os-webrtc-janus. All four assemblies are needed here, and the reason is not
+      obvious from their names:
+        WebRtcVoiceRegionModule  registers the viewer caps and then calls
+                                 scene.RequestModuleInterface<IWebRtcVoiceService>()
+        WebRtcVoiceServiceModule IS that interface. Despite "Service" in its name it
+                                 is an ISharedRegionModule registered at
+                                 /OpenSim/RegionModules. Without it the caps half
+                                 loads, runs, and logs "voice service not loaded".
+        WebRtcJanusService       needed when this region hosts its own Janus
+                                 (os-webrtc-janus.ini configurations B and C).
+        WebRtcVoice              shared; pulled in transitively, listed for clarity.
+    -->
     <ProjectReference Include="../../Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.csproj" />
+    <ProjectReference Include="../../Addons/os-webrtc-janus/WebRtcVoiceServiceModule/WebRtcVoiceServiceModule.csproj" />
+    <ProjectReference Include="../../Addons/os-webrtc-janus/Janus/WebRtcJanusService.csproj" />
   </ItemGroup>
 
   <ItemGroup>
