@@ -112,72 +112,31 @@ public class MapImageModule : IMapImageGenerator, INonSharedRegionModule
             int mapHeight = m_scene.Heightmap.Height;
 
             var mapbmp = new SKBitmap(mapWidth, mapHeight);
-            
-            // Create terrain renderer based on scene settings
-            terrainRenderer = new TexturedMapTileRenderer();
 
-            // Get terrain height data and render it directly
-            float[] heightData = m_scene.Heightmap.GetFloatsSerialised();
-            using (var surface = SKSurface.Create(new SKImageInfo(mapWidth, mapHeight)))
-            using (var canvas = surface.Canvas)
-            {
-                // Draw terrain heights
-                float maxHeight = float.MinValue;
-                float minHeight = float.MaxValue;
-                
-                // Find height range
-                foreach (var height in heightData)
-                {
-                    maxHeight = Math.Max(maxHeight, height);
-                    minHeight = Math.Min(minHeight, height);
-                }
+            // Render through IMapTileTerrainRenderer, as stock OpenSimulator does.
+            //
+            // This module previously assigned `terrainRenderer = new TexturedMapTileRenderer()`
+            // and then never used it: the field was written once and read nowhere, and the
+            // tile was produced by a hand-rolled greyscale loop over GetFloatsSerialised().
+            // TextureOnMapTile was not read at all, so setting it true had no effect and the
+            // world map was always grey relief regardless of configuration.
+            //
+            // Both renderers exist in this tree, ported to SKBitmap, with the interface
+            // intact - they were simply orphaned by the SkiaSharp rewrite. Restoring the
+            // stock selection also retires the flat-terrain NaN guard that used to live in
+            // the loop below, because the contrast stretch it guarded no longer exists here:
+            // ShadedMapTileRenderer works from absolute height with its own NaN handling,
+            // and TexturedMapTileRenderer samples real terrain textures.
+            string[] configSections = new string[] { "Map", "Startup" };
+            bool textureTerrain = Util.GetConfigVarFromSections<bool>(
+                    m_config, "TextureOnMapTile", configSections, false);
 
-                float heightRange = maxHeight - minHeight;
+            terrainRenderer = textureTerrain
+                    ? new TexturedMapTileRenderer()
+                    : (IMapTileTerrainRenderer)new ShadedMapTileRenderer();
 
-                // A region with no terrain edits is PERFECTLY FLAT - TerrainChannel's
-                // default is ClearLand(DefaultTerrainHeight), and DefaultTerrainHeight is
-                // 21f (OpenSim.Framework/TerrainData.cs:87). Every point is then
-                // simultaneously the minimum and the maximum, heightRange is 0, and the
-                // contrast stretch below divides 0f by 0f. That is NaN, and converting NaN
-                // to byte yields 0, so a brand new region renders a PURE BLACK map tile
-                // from its first render onward. No exception is thrown anywhere.
-                //
-                // Written as !(x > 0f) rather than x <= 0f ON PURPOSE: the negated form is
-                // also true for NaN, so a heightmap that already contains NaN is caught
-                // here instead of passing the guard and reaching the division anyway.
-                // Do not "simplify" this to <= 0f.
-                bool flatTerrain = !(heightRange > 0f);
-                
-                // Render terrain
-                int index = 0;
-                // Traversal order (y outer, x inner, index++) is preserved exactly as
-                // found rather than "corrected" against GetFloatsSerialised's ordering.
-                // Every region on this grid is square, so the two are indistinguishable
-                // here; on a non-square varregion they would not be. That is a separate
-                // question from the size bug and is deliberately not answered by this patch.
-                for (int y = 0; y < mapHeight; y++)
-                {
-                    for (int x = 0; x < mapWidth; x++)
-                    {
-                        float height = heightData[index++];
-                        // Normalize height to 0-255 range. On flat terrain the stretch has
-                        // no answer - every point is both bounds - so legibility decides:
-                        // mid-grey, which shades to RGB(102,102,102) and is distinct both
-                        // from an empty cell's ocean fill RGB(30,70,95) and from the
-                        // RGB(0,0,0) this used to produce.
-                        byte gray = flatTerrain
-                            ? (byte)128
-                            : (byte)(((height - minHeight) / heightRange) * 255);
-                        
-                        // Apply some lighting to create terrain shading
-                        byte shaded = (byte)(gray * 0.8f); // Darken slightly
-                        var color = new SKColor(shaded, shaded, shaded);
-                        
-                        // Set pixel directly
-                        mapbmp.SetPixel(x, y, color);
-                    }
-                }
-            }
+            terrainRenderer.Initialise(m_scene, m_config);
+            terrainRenderer.TerrainToBitmap(mapbmp);
 
             if (m_scene?.Entities != null && m_scene.Entities.Count > 0)
             {
