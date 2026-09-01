@@ -78,6 +78,23 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
     private static J2KEncoderConfiguration BuildEncoderConfig(int width, int height)
     {
         return new J2KEncoderConfiguration()
+            // Emit a RAW J2C codestream, not a JP2 container.
+            //
+            // CoreJ2K wraps its output in the JP2 file format by default: a
+            // signature box, an 'ftypjp2' brand box and a jp2h header box, with the
+            // codestream buried in a jp2c box 85 bytes in. Second Life viewers decode
+            // raw .j2c and cannot read that wrapper, so the face stays blank with no
+            // error at any layer - the asset is valid, decodable, correctly sized and
+            // single-tile, and still never renders.
+            //
+            // Stock OpenSimulator used OpenJPEG.EncodeFromImage, which always emitted
+            // a raw codestream. The wrapper arrived with the CoreJ2K rewrite.
+            //
+            // Measured both ways on a 512x512 bitmap:
+            //   default                 1932 bytes, starts 00 00 00 0c 6a 50 20 20
+            //   WithFileFormat(false)   1847 bytes, starts ff 4f ff 51
+            // The raw codestream is also smaller; the container was pure overhead.
+            .WithFileFormat(false)
             .WithTiles(t => t.SetSize(width, height))
             .WithWavelet(w => w.UseIrreversible97().WithDecompositionLevels(5))
             .WithProgression(p => p.WithOrder(ProgressionOrder.LRCP).WithQualityLayers(0.1f, 0.5f, 1.0f));
