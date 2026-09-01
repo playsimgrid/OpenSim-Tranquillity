@@ -35,6 +35,7 @@ using OpenSim.Services.Base;
 using OpenSim.Services.Interfaces;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.Cryptography;
 
 namespace OpenSim.Services.FSAssetService;
 
@@ -358,7 +359,29 @@ public class FSAssetConnector : ServiceBase, IAssetService
 
     string GetSHA256Hash(byte[] data)
     {
-        return Util.SHA256Hash(data);
+        // UPPERCASE, deliberately, and computed here rather than via Util.SHA256Hash.
+        //
+        // This hash is BOTH the fsassets DB key and the on-disk path, so its case is
+        // a persisted storage convention, not a formatting choice. Stock OpenSimulator
+        // produces uppercase here (BitConverter.ToString), and a grid that has ever run
+        // stock has uppercase paths on disk.
+        //
+        // Util.SHA256Hash returns LOWERCASE. It calls bytesToHexString(hash, false),
+        // whose lowerCaps parameter is dead - both branches of that function call the
+        // Lowcaps helpers, and the Highcaps pair is defined and never called. That is
+        // inherited from OpenSimulator core, not introduced here, and it is why routing
+        // this through Util silently changed the storage convention with no error.
+        //
+        // Observed on a grid running both versions concurrently: the same asset stored
+        // twice, byte-identical, under 630C5F99... and 630c5f99... on case-sensitive
+        // ext4 - two rows, two files, dedup missing across versions.
+        //
+        // Do NOT "simplify" this back to Util.SHA256Hash, and do NOT fix it by making
+        // bytesToHexString honour lowerCaps: SHA1Hash shares that helper and its output
+        // is used as an HTTP path in RegionStatsHandler and OpenSimBase, so flipping the
+        // helper silently changes live endpoint URLs.
+        byte[] hash = SHA256.HashData(data);
+        return BitConverter.ToString(hash).Replace("-", string.Empty);
     }
 
     public string HashToPath(string hash)
