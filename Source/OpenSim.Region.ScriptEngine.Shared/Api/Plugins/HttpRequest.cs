@@ -1,3 +1,5 @@
+using log4net;
+using System.Reflection;
 /*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
@@ -33,11 +35,28 @@ namespace OpenSim.Region.ScriptEngine.Shared.Api.Plugins;
 
 public class HttpRequest
 {
+    private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
     public AsyncCommandManager m_CmdManager;
 
     public HttpRequest(AsyncCommandManager CmdManager)
     {
         m_CmdManager = CmdManager;
+    }
+
+    // DIAGNOSTIC (#96): AsyncCommandManager wraps CheckHttpRequests in `catch { }`,
+    // so an InvalidCastException here would lose the result AFTER dequeuing it,
+    // silently and with no trace. Two HttpRequestClass types in different
+    // AssemblyLoadContexts would do exactly that.
+    private static HttpRequestClass Dequeue(IHttpRequestModule m)
+    {
+        IServiceRequest raw = m.GetNextCompletedRequest();
+        if (raw is null)
+            return null;
+        m_log.Info($"[HTTP POLL]: dequeued type={raw.GetType().FullName}");
+        m_log.Info($"[HTTP POLL]:   got asm={raw.GetType().Assembly.FullName}");
+        m_log.Info($"[HTTP POLL]:   exp asm={typeof(HttpRequestClass).Assembly.FullName}");
+        m_log.Info($"[HTTP POLL]:   castable={raw is HttpRequestClass}");
+        return raw as HttpRequestClass;
     }
 
     public void CheckHttpRequests()
@@ -49,7 +68,7 @@ public class HttpRequest
         if(iHttpReq == null)
             return;
 
-        HttpRequestClass httpInfo = (HttpRequestClass)iHttpReq.GetNextCompletedRequest();
+        HttpRequestClass httpInfo = Dequeue(iHttpReq);
         while (httpInfo != null)
         {
             //m_log.Debug("[AsyncLSL]:" + httpInfo.response_body + httpInfo.status);
@@ -69,6 +88,7 @@ public class HttpRequest
                 new LSL_Types.LSLString(httpInfo.ResponseBody)
             };
 
+            m_log.Info($"[HTTP POLL]: delivering reqID={httpInfo.ReqID} status={httpInfo.Status} localID={httpInfo.LocalID}");
             foreach (IScriptEngine e in m_CmdManager.ScriptEngines)
             {
                 if (e.PostObjectEvent(httpInfo.LocalID,
@@ -76,7 +96,7 @@ public class HttpRequest
                         resobj, new DetectParams[0])))
                     break;
             }
-            httpInfo = (HttpRequestClass)iHttpReq.GetNextCompletedRequest();
+            httpInfo = Dequeue(iHttpReq);
         }
     }
 }
