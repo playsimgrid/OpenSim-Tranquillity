@@ -1,3 +1,4 @@
+using System;
 /*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
@@ -320,8 +321,32 @@ public class DotNetCorePluginsDiscovery : IPluginDiscovery
     private static void TryAddType(HashSet<Type> sharedTypes, string assemblyQualifiedTypeName)
     {
         Type resolvedType = Type.GetType(assemblyQualifiedTypeName, false);
+        if (resolvedType is null)
+        {
+            // Type.GetType only sees assemblies ALREADY loaded. OpenSim.Framework
+            // does not reference OpenSim.Region.CoreModules, so at discovery time it
+            // is not loaded and this silently shared NOTHING - which is exactly how
+            // the first attempt at fixing #96 appeared to work and did not.
+            int comma = assemblyQualifiedTypeName.IndexOf(',');
+            if (comma > 0)
+            {
+                try
+                {
+                    Assembly.Load(assemblyQualifiedTypeName.Substring(comma + 1).Trim());
+                    resolvedType = Type.GetType(assemblyQualifiedTypeName, false);
+                }
+                catch { }
+            }
+        }
         if (resolvedType != null)
+        {
+            Console.WriteLine($"[PLUGIN DISCOVERY]: SHARED {resolvedType.FullName}");
             sharedTypes.Add(resolvedType);
+        }
+        else
+        {
+            Console.WriteLine($"[PLUGIN DISCOVERY]: SHARED TYPE NOT RESOLVED: {assemblyQualifiedTypeName}");
+        }
     }
 
     private static bool ShouldProbeAssembly(string dllPath, Type requiredTypeHint)
