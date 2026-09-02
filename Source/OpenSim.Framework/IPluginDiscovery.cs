@@ -300,6 +300,20 @@ public class DotNetCorePluginsDiscovery : IPluginDiscovery
         TryAddType(sharedTypes, "OpenSim.Framework.Servers.IMainServer, OpenSim.Framework.Servers");
         TryAddType(sharedTypes, "OpenSim.Framework.Servers.HttpServer.IHttpServer, OpenSim.Framework.Servers.HttpServer");
 
+        // #96. OpenSim.Region.CoreModules is a direct ProjectReference of the
+        // RegionServer, so it is ALREADY in the default load context. Without it
+        // here the plugin context loads a SECOND copy, and the two HttpRequestClass
+        // types - identical in name, assembly, version and public key - do not cast
+        // to each other. AsyncCommandManager wraps the poller in `catch { }`, so the
+        // InvalidCastException discarded every completed llHTTPRequest result AFTER
+        // dequeuing it: silently, with no log line anywhere, forever.
+        //
+        // Sharing the assembly is not a workaround. Core is core; a plugin must not
+        // get its own copy of a type the host already owns, and any other concrete
+        // cast across that boundary has the same latent bug.
+        TryAddType(sharedTypes, "OpenSim.Region.Framework.Interfaces.IServiceRequest, OpenSim.Region.Framework");
+        TryAddType(sharedTypes, "OpenSim.Region.CoreModules.Scripting.HttpRequest.HttpRequestClass, OpenSim.Region.CoreModules");
+
         return sharedTypes.ToArray();
     }
 
