@@ -251,6 +251,36 @@ public class DotNetCorePluginsDiscovery : IPluginDiscovery
                 continue;
             }
 
+            // #96 ROOT CAUSE. Every *.dll in bin was plugin-loaded into its own
+            // AssemblyLoadContext - INCLUDING assemblies the RegionServer already
+            // references and therefore already has in the DEFAULT context. That
+            // produced two OpenSim.Region.CoreModules, and two HttpRequestClass
+            // types identical in name, assembly, version and public key that do not
+            // cast to each other.
+            //
+            // sharedTypes does not help here: it governs a plugin's DEPENDENCIES,
+            // never the plugin's own main assembly. The only correct answer is not
+            // to load a second copy at all.
+            string simpleName = Path.GetFileNameWithoutExtension(dllPath);
+            Assembly hostCopy = null;
+            foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (a.IsDynamic)
+                    continue;
+                if (string.Equals(a.GetName().Name, simpleName, StringComparison.OrdinalIgnoreCase))
+                {
+                    hostCopy = a;
+                    break;
+                }
+            }
+            if (hostCopy is not null)
+            {
+                Console.WriteLine($"[PLUGIN DISCOVERY]: HOST COPY reused, not re-loaded: {simpleName}");
+                if (!m_assemblies.Contains(hostCopy))
+                    m_assemblies.Add(hostCopy);
+                continue;
+            }
+
             try
             {
                 string assemblyPath = Path.IsPathRooted(dllPath)? dllPath : Path.GetFullPath(dllPath);
