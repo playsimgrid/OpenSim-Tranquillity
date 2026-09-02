@@ -36,6 +36,8 @@ using OpenSim.Framework.Monitoring;
 using OpenSim.Region.Framework.Interfaces;
 using OpenSim.Region.Framework.Scenes;
 using System.Security.Authentication;
+using log4net;
+using System.Reflection;
 
 /*****************************************************
  *
@@ -57,7 +59,7 @@ public class HttpRequestModule : INonSharedRegionModule, IHttpRequestModule
         public float control;
     }
 
-    // private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+    internal static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
     private static HttpClient VeriFyCertClient = null;
     private static HttpClient VeriFyNoCertClient = null;
@@ -474,6 +476,7 @@ public class HttpRequestModule : INonSharedRegionModule, IHttpRequestModule
     */
     public void GotCompletedRequest(HttpRequestClass req)
     {
+            m_log.Info($"[SCRIPTS HTTP REQUEST]: COMPLETE reqID={req.ReqID} status={req.Status}");
         lock (m_mainLock)
         {
             m_pendingRequests.Remove(req.ReqID);
@@ -579,11 +582,28 @@ public class HttpRequestClass : IServiceRequest
 
     public void Process()
     {
-        HttpRequestModule.m_jobEngine?.QueueJob("", SendRequest);
+            // DIAGNOSTIC (#96). The `?.` this replaces was a silent failure by
+            // construction: a null engine accepts the request, returns a real key,
+            // records it as pending, and never sends it - exactly the reported
+            // symptom. A subsystem's whole dispatch path must not fail quietly.
+            JobEngine je = HttpRequestModule.m_jobEngine;
+            if (je is null)
+            {
+                HttpRequestModule.m_log.Error(
+                    $"[SCRIPTS HTTP REQUEST]: DISPATCH FAILED - job engine is NULL. reqID={ReqID} url={Url}");
+                return;
+            }
+            if (!je.IsRunning)
+                HttpRequestModule.m_log.Error(
+                    $"[SCRIPTS HTTP REQUEST]: DISPATCH onto a STOPPED engine. reqID={ReqID} url={Url}");
+            HttpRequestModule.m_log.Info(
+                $"[SCRIPTS HTTP REQUEST]: QUEUE reqID={ReqID} url={Url} waiting={je.JobsWaiting}");
+            je.QueueJob("", SendRequest);
     }
 
     public void SendRequest()
     {
+            HttpRequestModule.m_log.Info($"[SCRIPTS HTTP REQUEST]: RUN reqID={ReqID} removed={Removed}");
         if (Removed)
              return;
 
