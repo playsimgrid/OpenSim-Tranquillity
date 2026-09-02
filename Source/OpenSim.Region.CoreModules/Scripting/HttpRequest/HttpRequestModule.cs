@@ -476,7 +476,6 @@ public class HttpRequestModule : INonSharedRegionModule, IHttpRequestModule
     */
     public void GotCompletedRequest(HttpRequestClass req)
     {
-            m_log.Info($"[SCRIPTS HTTP REQUEST]: COMPLETE reqID={req.ReqID} status={req.Status}");
         lock (m_mainLock)
         {
             m_pendingRequests.Remove(req.ReqID);
@@ -596,14 +595,11 @@ public class HttpRequestClass : IServiceRequest
             if (!je.IsRunning)
                 HttpRequestModule.m_log.Error(
                     $"[SCRIPTS HTTP REQUEST]: DISPATCH onto a STOPPED engine. reqID={ReqID} url={Url}");
-            HttpRequestModule.m_log.Info(
-                $"[SCRIPTS HTTP REQUEST]: QUEUE reqID={ReqID} url={Url} waiting={je.JobsWaiting}");
             je.QueueJob("", SendRequest);
     }
 
     public void SendRequest()
     {
-            HttpRequestModule.m_log.Info($"[SCRIPTS HTTP REQUEST]: RUN reqID={ReqID} removed={Removed}");
         if (Removed)
              return;
 

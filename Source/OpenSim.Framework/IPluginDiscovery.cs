@@ -275,7 +275,6 @@ public class DotNetCorePluginsDiscovery : IPluginDiscovery
             }
             if (hostCopy is not null)
             {
-                Console.WriteLine($"[PLUGIN DISCOVERY]: HOST COPY reused, not re-loaded: {simpleName}");
                 if (!m_assemblies.Contains(hostCopy))
                     m_assemblies.Add(hostCopy);
                 continue;
@@ -370,7 +369,6 @@ public class DotNetCorePluginsDiscovery : IPluginDiscovery
         }
         if (resolvedType != null)
         {
-            Console.WriteLine($"[PLUGIN DISCOVERY]: SHARED {resolvedType.FullName}");
             sharedTypes.Add(resolvedType);
         }
         else

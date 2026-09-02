@@ -52,11 +52,17 @@ public class HttpRequest
         IServiceRequest raw = m.GetNextCompletedRequest();
         if (raw is null)
             return null;
-        m_log.Info($"[HTTP POLL]: dequeued type={raw.GetType().FullName}");
-        m_log.Info($"[HTTP POLL]:   got asm={raw.GetType().Assembly.FullName}");
-        m_log.Info($"[HTTP POLL]:   exp asm={typeof(HttpRequestClass).Assembly.FullName}");
-        m_log.Info($"[HTTP POLL]:   castable={raw is HttpRequestClass}");
-        return raw as HttpRequestClass;
+        if (raw is HttpRequestClass typed)
+            return typed;
+
+        // Was a silent InvalidCastException swallowed by AsyncCommandManager's
+        // catch { }, discarding a completed result after dequeuing it (#96). If
+        // this ever fires again the duplicate-load-context problem is back.
+        m_log.Error(
+            $"[HTTP POLL]: completed request DISCARDED - {raw.GetType().FullName} " +
+            $"from {raw.GetType().Assembly.FullName} is not castable to the expected type " +
+            $"from {typeof(HttpRequestClass).Assembly.FullName}. Duplicate AssemblyLoadContext.");
+        return null;
     }
 
     public void CheckHttpRequests()
