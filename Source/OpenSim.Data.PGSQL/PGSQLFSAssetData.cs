@@ -98,7 +98,7 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
         AssetMetadata meta = null;
         UUID uuid = new UUID(id);
 
-        string query = String.Format("select \"id\", \"type\", \"hash\", \"create_time\", \"access_time\", \"asset_flags\" from {0} where \"id\" = :id", m_Table);
+        string query = String.Format("select \"id\", \"name\", \"description\", \"type\", \"hash\", \"create_time\", \"access_time\", \"asset_flags\" from {0} where \"id\" = :id", m_Table);
         using (NpgsqlConnection dbcon = new NpgsqlConnection(m_connectionString))
         using (NpgsqlCommand cmd = new NpgsqlCommand(query, dbcon))
         {
@@ -112,8 +112,8 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
                     hash = reader["hash"].ToString();
                     meta.ID = id;
                     meta.FullID = uuid;
-                    meta.Name = String.Empty;
-                    meta.Description = String.Empty;
+                    meta.Name = reader["name"].ToString();
+                    meta.Description = reader["description"].ToString();
                     meta.Type = (sbyte)Convert.ToInt32(reader["type"]);
                     meta.ContentType = SLUtil.SLAssetTypeToContentType(meta.Type);
                     meta.CreationDate = Util.ToDateTime(Convert.ToInt32(reader["create_time"]));
@@ -139,7 +139,7 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
         using (NpgsqlCommand cmd = new NpgsqlCommand(query, dbcon))
         {
             dbcon.Open();
-            int now = (int)((System.DateTime.Now.Ticks - m_ticksToEpoch) / 10000000);
+            int now = Util.UnixTimeSinceEpoch();
             cmd.Parameters.Add(m_database.CreateParameter("id", id));
             cmd.Parameters.Add(m_database.CreateParameter("access_time", now));
             cmd.ExecuteNonQuery();
@@ -150,23 +150,36 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
     {
         try
         {
-            bool found = false;
             string oldhash;
             AssetMetadata existingAsset = Get(meta.ID, out oldhash);
 
+            // PlaySim: an asset that already exists is a SUCCESS, as in the MySQL
+            // store ("assume it was already correctly stored, or regions will keep
+            // retry"). Returning false here made FSAssetService answer UUID.Zero, so a
+            // region re-sending an existing asset was told the upload failed.
             string query = String.Format("UPDATE {0} SET \"access_time\" = :access_time WHERE \"id\" = :id", m_Table);
             if (existingAsset == null)
             {
-               query = String.Format("insert into {0} (\"id\", \"type\", \"hash\", \"asset_flags\", \"create_time\", \"access_time\") values ( :id, :type, :hash, :asset_flags, :create_time, :access_time)", m_Table);
-               found = true;
+                query = String.Format("insert into {0} (\"id\", \"name\", \"description\", \"type\", \"hash\", \"asset_flags\", \"create_time\", \"access_time\") values ( :id, :name, :description, :type, :hash, :asset_flags, :create_time, :access_time)", m_Table);
             }
+
+            // Postgres rejects an over-length varchar where MySQL silently truncates,
+            // so truncate here to the same limits the other asset stores use.
+            string name = meta.Name ?? String.Empty;
+            if (name.Length > AssetBase.MAX_ASSET_NAME)
+                name = name.Substring(0, AssetBase.MAX_ASSET_NAME);
+            string description = meta.Description ?? String.Empty;
+            if (description.Length > AssetBase.MAX_ASSET_DESC)
+                description = description.Substring(0, AssetBase.MAX_ASSET_DESC);
 
             using (NpgsqlConnection dbcon = new NpgsqlConnection(m_connectionString))
             using (NpgsqlCommand cmd = new NpgsqlCommand(query, dbcon))
             {
                 dbcon.Open();
-                int now = (int)((System.DateTime.Now.Ticks - m_ticksToEpoch) / 10000000);
+                int now = Util.UnixTimeSinceEpoch();
                 cmd.Parameters.Add(m_database.CreateParameter("id", meta.FullID));
+                cmd.Parameters.Add(m_database.CreateParameter("name", name));
+                cmd.Parameters.Add(m_database.CreateParameter("description", description));
                 cmd.Parameters.Add(m_database.CreateParameter("type", meta.Type));
                 cmd.Parameters.Add(m_database.CreateParameter("hash", hash));
                 cmd.Parameters.Add(m_database.CreateParameter("asset_flags", Convert.ToInt32(meta.Flags)));
@@ -174,7 +187,7 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
                 cmd.Parameters.Add(m_database.CreateParameter("access_time", now));
                 cmd.ExecuteNonQuery();
             }
-            return found;
+            return true;
         }
         catch(Exception e)
         {
@@ -255,7 +268,7 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
         string limit = String.Empty;
         if(count != -1)
         {
-            limit = String.Format(" limit {0} offset {1}", start, count);
+            limit = String.Format(" limit {0} offset {1}", count, start);  // PlaySim: was (start, count) - reversed
         }
         string query = String.Format("select * from {0}{1}", table, limit);
         try
@@ -281,8 +294,8 @@ public class PGSQLFSAssetData : IFSAssetDataPlugin
                         meta.ID = reader["id"].ToString();
                         meta.FullID = new UUID(meta.ID);
 
-                        meta.Name = String.Empty;
-                        meta.Description = String.Empty;
+                        meta.Name = reader["name"].ToString();
+                        meta.Description = reader["description"].ToString();
                         meta.Type = (sbyte)Convert.ToInt32(reader["assetType"]);
                         meta.ContentType = SLUtil.SLAssetTypeToContentType(meta.Type);
                         meta.CreationDate = Util.ToDateTime(Convert.ToInt32(reader["create_time"]));

@@ -12,3 +12,16 @@ CREATE TABLE fsassets (
 );
 
 COMMIT;
+
+:VERSION 2
+
+BEGIN TRANSACTION;
+
+-- PlaySim: parity with the MySQL FSAssetStore, which has always carried name and
+-- description. Without them every asset served from Postgres came back unnamed
+-- (3.29M of 3.65M PlaySim assets have a name). IF NOT EXISTS so a table that was
+-- hand-extended during the 2026-09-06 rehearsal migrates cleanly.
+ALTER TABLE fsassets ADD COLUMN IF NOT EXISTS "name" varchar(64) NOT NULL DEFAULT '';
+ALTER TABLE fsassets ADD COLUMN IF NOT EXISTS "description" varchar(64) NOT NULL DEFAULT '';
+
+COMMIT;
