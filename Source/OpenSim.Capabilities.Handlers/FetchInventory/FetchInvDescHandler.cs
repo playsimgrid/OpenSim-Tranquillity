@@ -25,6 +25,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
 using log4net;
@@ -197,6 +198,13 @@ public class FetchInvDescHandler
                     LLSDxmlEncode2.AddEmptyArray("categories", lastresponse);
                 else
                 {
+                    // One lookup for every folder in this reply - see
+                    // InventoryThumbnails. Null with no provider installed.
+                    UUID[] folderIds = new UUID[thiscoll.Folders.Count];
+                    for (int fi = 0; fi < thiscoll.Folders.Count; fi++)
+                        folderIds[fi] = thiscoll.Folders[fi].ID;
+                    Dictionary<UUID, UUID> folderThumbnails = InventoryThumbnails.ForFolders(folderIds);
+
                     LLSDxmlEncode2.AddArray("categories", lastresponse);
                     foreach (InventoryFolderBase invFolder in thiscoll.Folders)
                     {
@@ -208,6 +216,14 @@ public class FetchInvDescHandler
                         LLSDxmlEncode2.AddElem("type_default", invFolder.Type, lastresponse);
                         LLSDxmlEncode2.AddElem_version( invFolder.Version, lastresponse);
 
+                        // The picture on a folder - what the Outfit Gallery draws.
+                        if (folderThumbnails is not null
+                            && folderThumbnails.TryGetValue(invFolder.ID, out UUID folderThumbnail)
+                            && folderThumbnail.IsNotZero())
+                        {
+                            LLSDxmlEncode2.AddElem("thumbnail_id", folderThumbnail, lastresponse);
+                        }
+
                         LLSDxmlEncode2.AddEndMap(lastresponse);
                     }
                     LLSDxmlEncode2.AddEndArray(lastresponse);
@@ -217,10 +233,17 @@ public class FetchInvDescHandler
                     LLSDxmlEncode2.AddEmptyArray("items", lastresponse);
                 else
                 {
+                    UUID[] itemIds = new UUID[thiscoll.Items.Count];
+                    for (int ii = 0; ii < thiscoll.Items.Count; ii++)
+                        itemIds[ii] = thiscoll.Items[ii].ID;
+                    Dictionary<UUID, UUID> itemThumbnails = InventoryThumbnails.ForItems(itemIds);
+
                     LLSDxmlEncode2.AddArray("items", lastresponse);
                     foreach (InventoryItemBase invItem in thiscoll.Items)
                     {
-                        invItem.ToLLSDxml(lastresponse);
+                        UUID itemThumbnail = UUID.Zero;
+                        itemThumbnails?.TryGetValue(invItem.ID, out itemThumbnail);
+                        invItem.ToLLSDxml(lastresponse, 0xffffffff, itemThumbnail);
                     }
 
                     LLSDxmlEncode2.AddEndArray(lastresponse);

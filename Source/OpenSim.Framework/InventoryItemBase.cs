@@ -410,7 +410,7 @@ public class InventoryItemBase : InventoryNodeBase, ICloneable
         return MemberwiseClone();
     }
 
-    public void ToLLSDxml(osUTF8 lsl, uint flagsMask = 0xffffffff)
+    public void ToLLSDxml(osUTF8 lsl, uint flagsMask = 0xffffffff, UUID thumbnailId = default)
     {
         LLSDxmlEncode2.AddMap(lsl);
             LLSDxmlEncode2.AddElem_parent_id(Folder, lsl);
@@ -438,6 +438,12 @@ public class InventoryItemBase : InventoryNodeBase, ICloneable
             LLSDxmlEncode2.AddElem_name(Name, lsl);
             LLSDxmlEncode2.AddElem("desc", Description, lsl);
             LLSDxmlEncode2.AddElem("created_at", CreationDate, lsl);
+
+            // Viewers read the picture on an item from this one field
+            // (Firestorm llinventory.cpp, LLInventoryItem::fromLLSD). Written
+            // only when something supplied one - see InventoryThumbnails.
+            if (thumbnailId.IsNotZero())
+                LLSDxmlEncode2.AddElem("thumbnail_id", thumbnailId, lsl);
 
         LLSDxmlEncode2.AddEndMap(lsl);
     }
