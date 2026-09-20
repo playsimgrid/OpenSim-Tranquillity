@@ -94,11 +94,20 @@ namespace OpenSim.Capabilities.Handlers
             }
             else
             {
+                Dictionary<UUID, UUID> thumbnails = InventoryThumbnails.ForItems(itemIDs);
+
                 LLSDxmlEncode2.AddArray("items", lsl);
                 foreach (InventoryItemBase item in items)
                 {
                     if (item is not null)
-                        item.ToLLSDxml(lsl, 0xff);
+                    {
+                        // One question for the whole reply: a provider looks
+                        // these up over the network.
+                        UUID thumbnail = UUID.Zero;
+                        if (thumbnails != null)
+                            thumbnails.TryGetValue(item.ID, out thumbnail);
+                        item.ToLLSDxml(lsl, 0xff, thumbnail);
+                    }
                 }
                 LLSDxmlEncode2.AddEndArray(lsl);
             }            
@@ -147,11 +156,20 @@ namespace OpenSim.Capabilities.Handlers
             }
             else
             {
+                Dictionary<UUID, UUID> thumbnails = InventoryThumbnails.ForItems(itemIDs);
+
                 LLSDxmlEncode2.AddArray("items", lsl);
                 foreach (InventoryItemBase item in items)
                 {
                     if (item != null)
-                        item.ToLLSDxml(lsl, 0xff);
+                    {
+                        // One question for the whole reply: a provider looks
+                        // these up over the network.
+                        UUID thumbnail = UUID.Zero;
+                        if (thumbnails != null)
+                            thumbnails.TryGetValue(item.ID, out thumbnail);
+                        item.ToLLSDxml(lsl, 0xff, thumbnail);
+                    }
                 }
                 LLSDxmlEncode2.AddEndArray(lsl);
             }
