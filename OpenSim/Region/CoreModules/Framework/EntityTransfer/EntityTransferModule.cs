@@ -814,6 +814,12 @@ namespace OpenSim.Region.CoreModules.Framework.EntityTransfer
             if (currentAgentCircuit is not null)
             {
                 agentCircuit.ServiceURLs = currentAgentCircuit.ServiceURLs;
+                // HG TRAVEL TOKEN. The traveller's home grid authorises every hypergrid hop
+                // against the ServiceSessionID it issued, and rotates it on each hop. The circuit
+                // built here comes from RequestClientInfo(), which does not carry it, so without
+                // this line an outbound hop presents an EMPTY token and the home grid refuses it
+                // (RefuseWrongToken) - including the traveller's trip home.
+                agentCircuit.ServiceSessionID = currentAgentCircuit.ServiceSessionID;
                 agentCircuit.IPAddress = currentAgentCircuit.IPAddress;
                 agentCircuit.Viewer = currentAgentCircuit.Viewer;
                 agentCircuit.Channel = currentAgentCircuit.Channel;
@@ -1692,6 +1698,12 @@ namespace OpenSim.Region.CoreModules.Framework.EntityTransfer
             if (currentAgentCircuit is not null)
             {
                 agentCircuit.ServiceURLs = currentAgentCircuit.ServiceURLs;
+                // HG TRAVEL TOKEN. The traveller's home grid authorises every hypergrid hop
+                // against the ServiceSessionID it issued, and rotates it on each hop. The circuit
+                // built here comes from RequestClientInfo(), which does not carry it, so without
+                // this line an outbound hop presents an EMPTY token and the home grid refuses it
+                // (RefuseWrongToken) - including the traveller's trip home.
+                agentCircuit.ServiceSessionID = currentAgentCircuit.ServiceSessionID;
                 agentCircuit.IPAddress = currentAgentCircuit.IPAddress;
                 agentCircuit.Viewer = currentAgentCircuit.Viewer;
                 agentCircuit.Channel = currentAgentCircuit.Channel;

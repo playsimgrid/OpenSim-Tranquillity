@@ -98,6 +98,28 @@ namespace OpenSim.Services.Connectors.Simulation
             args["teleport_flags"] = OSD.FromString(flags.ToString());
         }
 
+        /// <summary>
+        /// Carry a rotated hypergrid travel token back onto the circuit we just sent.
+        /// </summary>
+        /// <remarks>
+        /// The traveller's home grid authorises each hypergrid hop against ServiceSessionID and
+        /// issues a NEW one for the next hop, returned as service_session_id. Dropping it means
+        /// the next hop presents the old token and is refused (RefuseWrongToken) - which breaks
+        /// the trip home and any onward hypergrid jump.
+        /// </remarks>
+        protected static void ApplyCreateAgentResponse(OSDMap data, AgentCircuitData aCircuit, bool success)
+        {
+            if (!success || data is null || aCircuit is null)
+                return;
+
+            if (data.TryGetValue("service_session_id", out OSD rotated))
+            {
+                string token = rotated.AsString();
+                if (!string.IsNullOrEmpty(token))
+                    aCircuit.ServiceSessionID = token;
+            }
+        }
+
         public bool CreateAgent(GridRegion source, GridRegion destination, AgentCircuitData aCircuit, uint flags, EntityTransferContext ctx, out string reason)
         {
             reason = String.Empty;
@@ -128,6 +150,7 @@ namespace OpenSim.Services.Connectors.Simulation
                     OSDMap data = (OSDMap)tmpOSD;
                     reason = data["reason"].AsString();
                     success = data["success"].AsBoolean();
+                    ApplyCreateAgentResponse(data, aCircuit, success);
                     return success;
                 }
 
@@ -142,6 +165,7 @@ namespace OpenSim.Services.Connectors.Simulation
                         OSDMap data = (OSDMap)tmpOSD;
                         reason = data["reason"].AsString();
                         success = data["success"].AsBoolean();
+                        ApplyCreateAgentResponse(data, aCircuit, success);
 
                         m_log.WarnFormat(
                             "[REMOTE SIMULATION CONNECTOR]: Remote simulator {0} did not accept compressed transfer, suggest updating that simulator.", destination.RegionName);
