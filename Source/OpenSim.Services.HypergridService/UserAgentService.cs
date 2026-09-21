@@ -290,40 +290,44 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         {
             string presentedToken = agentCircuit.ServiceSessionID;
             HGTravelingData hgt = m_Database.Get(agentCircuit.SessionID);
-            if (hgt is null)
-            {
-                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseNoSession: no travel session for {0} ({1} {2})",
-                    agentCircuit.SessionID, agentCircuit.firstname, agentCircuit.lastname);
-                reason = "No authorized travel session";
-                return false;
-            }
+            TravelingAgentInfo existingTravel = hgt is null ? null : new TravelingAgentInfo(hgt);
 
-            TravelingAgentInfo existingTravel = new TravelingAgentInfo(hgt);
+            HomeLaunchDecision decision = HomeLaunchAuthorization.Decide(
+                    fromLogin: false,
+                    travelSessionExists: existingTravel is not null,
+                    travelUserID: existingTravel is null ? UUID.Zero : existingTravel.UserID,
+                    agentID: agentCircuit.AgentID,
+                    storedToken: existingTravel?.ServiceToken,
+                    presentedToken: presentedToken,
+                    travelGridExternalName: existingTravel?.GridExternalName,
+                    homeGridName: m_GridName,
+                    targetGridName: gridName);
 
-            if (existingTravel.UserID != agentCircuit.AgentID)
+            if (decision != HomeLaunchDecision.Allow)
             {
-                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseUserMismatch: session {0} belongs to {1}, not {2}",
-                    agentCircuit.SessionID, existingTravel.UserID, agentCircuit.AgentID);
-                reason = "Unauthorized";
-                return false;
-            }
+                switch (decision)
+                {
+                    case HomeLaunchDecision.RefuseNoSession:
+                        m_log.WarnFormat("[USER AGENT SERVICE]: RefuseNoSession: no travel session for {0} ({1} {2})",
+                            agentCircuit.SessionID, agentCircuit.firstname, agentCircuit.lastname);
+                        break;
+                    case HomeLaunchDecision.RefuseUserMismatch:
+                        m_log.WarnFormat("[USER AGENT SERVICE]: RefuseUserMismatch: session {0} belongs to {1}, not {2}",
+                            agentCircuit.SessionID, existingTravel.UserID, agentCircuit.AgentID);
+                        break;
+                    case HomeLaunchDecision.RefuseWrongToken:
+                        m_log.WarnFormat("[USER AGENT SERVICE]: RefuseWrongToken: session {0} presented {1}, stored token was issued for {2}",
+                            agentCircuit.SessionID,
+                            HomeLaunchAuthorization.TokenProblem(presentedToken),
+                            existingTravel.GridExternalName);
+                        break;
+                    case HomeLaunchDecision.RefuseAlreadyHome:
+                        m_log.WarnFormat("[USER AGENT SERVICE]: RefuseAlreadyHome: session {0} is already on this grid",
+                            agentCircuit.SessionID);
+                        break;
+                }
 
-            if (string.IsNullOrEmpty(presentedToken) || !string.Equals(existingTravel.ServiceToken, presentedToken, StringComparison.Ordinal))
-            {
-                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseWrongToken: session {0} presented {1}, stored token was issued for {2}",
-                    agentCircuit.SessionID,
-                    string.IsNullOrEmpty(presentedToken) ? "an EMPTY token (origin region did not forward it)" : "a different token",
-                    existingTravel.GridExternalName);
-                reason = "Unauthorized";
-                return false;
-            }
-
-            // A launch onto this grid for an agent whose travel row already says it is here is
-            // not a hypergrid hop; local teleports do not go through /homeagent.
-            if (m_GridName == gridName && string.Equals(existingTravel.GridExternalName, m_GridName, StringComparison.InvariantCultureIgnoreCase))
-            {
-                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseAlreadyHome: session {0} is already on this grid", agentCircuit.SessionID);
-                reason = "Agent is already on the home grid";
+                reason = HomeLaunchAuthorization.ReasonFor(decision);
                 return false;
             }
         }
