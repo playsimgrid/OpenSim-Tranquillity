@@ -323,9 +323,14 @@ public class LLUDPServer : OpenSimUDPBase
     /// was authorised. Before this the mismatch was logged and the circuit accepted, so a
     /// viewer could attach from a different address than the one that passed CAPS auth.
     /// Addresses inside private or loopback ranges are exempt (NAT, local proxying).
-    /// DHPG security plan hg_homeagent_session_bind, item 5.
+    /// Default OFF, deliberately. A feature that can refuse a resident's circuit is opt-in:
+/// a region receiving this image with no RejectCircuitIPMismatch key in its ini must not
+/// start enforcing on its next restart. Turning it on is a config line somebody can point
+/// at afterwards. The symptom when it is wrong - UseCircuitCode refused - reads as a
+/// network fault, not as policy, so it should never arrive by default.
+/// DHPG security plan hg_homeagent_session_bind, item 5.
     /// </summary>
-    protected bool m_rejectCircuitIPMismatch = true;
+    protected bool m_rejectCircuitIPMismatch = false;   // OPT-IN: see the remark above
 
     /// <summary>
     /// Record how many packets have been resent

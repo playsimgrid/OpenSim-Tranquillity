@@ -289,6 +289,15 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         if (!fromLogin)
         {
             string presentedToken = agentCircuit.ServiceSessionID;
+            // DEPENDENCY, measured on this grid 2026-09-21: a local login leaves a row in
+            // hg_traveling_data naming THIS grid, with a token. That row is what authorises a
+            // resident's FIRST hypergrid hop out of home - without it the check below refuses
+            // with RefuseNoSession and nobody can leave the grid at all.
+            //
+            // Upstream considers that row a bug: OpenSim-NGC issue #199, "hg_traveling_data
+            // incorrectly created for local residents on HG-enabled grids". If that is ever
+            // "fixed" here, first hops out break, and the failure will look like this check
+            // being wrong rather than its precondition being removed.
             HGTravelingData hgt = m_Database.Get(agentCircuit.SessionID);
             TravelingAgentInfo existingTravel = hgt is null ? null : new TravelingAgentInfo(hgt);
 
