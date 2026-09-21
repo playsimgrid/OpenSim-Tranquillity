@@ -97,6 +97,21 @@ public class HomeLaunchAuthorizationTests
         });
     }
 
+    /// <summary>
+    /// Someone else's CURRENT token: well formed, unexpired, and genuinely issued
+    /// by this grid — just not for this session. It is refused for the same reason
+    /// as a stale one, because the only question asked is whether it matches the
+    /// token this session was issued.
+    /// </summary>
+    [Test]
+    public void AValidTokenBelongingToAnotherSessionIsRefused()
+    {
+        const string AnotherSessionsToken = "http://playsim.net:8002;9c4e1a77-0000-4000-8000-000000000002";
+
+        Assert.That(Hop(presentedToken: AnotherSessionsToken),
+                Is.EqualTo(HomeLaunchDecision.RefuseWrongToken));
+    }
+
     [Test]
     public void TheExactIssuedTokenIsAllowed()
     {
