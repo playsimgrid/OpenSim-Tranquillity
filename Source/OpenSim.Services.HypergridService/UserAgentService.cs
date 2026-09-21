@@ -275,6 +275,59 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
             RegionLocY = finalDestination.RegionLocY
         };
 
+        // SECURITY - HomeLaunchAuthorization (DHPG plan hg_homeagent_session_bind, item 1).
+        //
+        // Only a password login may launch an agent from nothing. A password login reaches
+        // this method in-process with fromLogin: true. EVERY other caller arrives over HTTP
+        // at /homeagent, and before this check a bare local UUID was enough: the handler
+        // invented a ServiceSessionID, wrote a travel row and seated the agent - no password,
+        // no prior trip, no matching token.
+        //
+        // So a non-login launch must be authorised by a travel session that already exists:
+        // same session, same user, and the token WE last issued. Note the presented token is
+        // read here, before the rotation below overwrites it.
+        if (!fromLogin)
+        {
+            string presentedToken = agentCircuit.ServiceSessionID;
+            HGTravelingData hgt = m_Database.Get(agentCircuit.SessionID);
+            if (hgt is null)
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseNoSession: no travel session for {0} ({1} {2})",
+                    agentCircuit.SessionID, agentCircuit.firstname, agentCircuit.lastname);
+                reason = "No authorized travel session";
+                return false;
+            }
+
+            TravelingAgentInfo existingTravel = new TravelingAgentInfo(hgt);
+
+            if (existingTravel.UserID != agentCircuit.AgentID)
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseUserMismatch: session {0} belongs to {1}, not {2}",
+                    agentCircuit.SessionID, existingTravel.UserID, agentCircuit.AgentID);
+                reason = "Unauthorized";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(presentedToken) || !string.Equals(existingTravel.ServiceToken, presentedToken, StringComparison.Ordinal))
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseWrongToken: session {0} presented {1}, stored token was issued for {2}",
+                    agentCircuit.SessionID,
+                    string.IsNullOrEmpty(presentedToken) ? "an EMPTY token (origin region did not forward it)" : "a different token",
+                    existingTravel.GridExternalName);
+                reason = "Unauthorized";
+                return false;
+            }
+
+            // A launch onto this grid for an agent whose travel row already says it is here is
+            // not a hypergrid hop; local teleports do not go through /homeagent.
+            if (m_GridName == gridName && string.Equals(existingTravel.GridExternalName, m_GridName, StringComparison.InvariantCultureIgnoreCase))
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: RefuseAlreadyHome: session {0} is already on this grid", agentCircuit.SessionID);
+                reason = "Agent is already on the home grid";
+                return false;
+            }
+        }
+
         // Generate a new service session
         agentCircuit.ServiceSessionID = region.ServerURI + ";" + UUID.Random();
         TravelingAgentInfo travel = CreateTravelInfo(agentCircuit, region, fromLogin, out TravelingAgentInfo old);
@@ -367,6 +420,41 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
     }
 
     // We need to prevent foreign users with the same UUID as a local user
+    // SECURITY (DHPG plan hg_homeagent_session_bind, item 2): user-aware variants.
+    // The session-only checks answer "is SOME agent on this session coming home" and
+    // "does this session hold this token". Neither asks WHO. A caller holding a live
+    // session id could therefore be treated as a different user returning home. The
+    // local gatekeeper uses these overloads so the agent id must match the travel row.
+    public bool IsAgentComingHome(UUID sessionID, UUID agentID, string thisGridExternalName)
+    {
+        HGTravelingData hgt = m_Database.Get(sessionID);
+        if (hgt is null || hgt.Data is null)
+            return false;
+
+        if (new UUID(hgt.UserID) != agentID)
+        {
+            m_log.WarnFormat("[USER AGENT SERVICE]: RefuseUserMismatch: session {0} is not agent {1}", sessionID, agentID);
+            return false;
+        }
+
+        return IsAgentComingHome(sessionID, thisGridExternalName);
+    }
+
+    public bool VerifyAgent(UUID sessionID, UUID agentID, string token)
+    {
+        HGTravelingData hgt = m_Database.Get(sessionID);
+        if (hgt is null)
+            return false;
+
+        if (new UUID(hgt.UserID) != agentID)
+        {
+            m_log.WarnFormat("[USER AGENT SERVICE]: RefuseUserMismatch: token presented for session {0} by agent {1}", sessionID, agentID);
+            return false;
+        }
+
+        return VerifyAgent(sessionID, token);
+    }
+
     public bool IsAgentComingHome(UUID sessionID, string thisGridExternalName)
     {
         HGTravelingData hgt = m_Database.Get(sessionID);
@@ -390,6 +478,16 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
             return false;
 
         TravelingAgentInfo travel = new(hgt);
+
+        // SECURITY: fail closed when no client IP was ever recorded for this session.
+        // ClientIPAddress is only filled on a login-originated trip; a travel row created by
+        // any other path has it empty, and comparing empty to empty passed every check.
+        // DHPG security plan hg_homeagent_session_bind, item 4.
+        if (string.IsNullOrEmpty(travel.ClientIPAddress))
+        {
+            m_log.WarnFormat("[USER AGENT SERVICE]: Refusing client verification for session {0}: no client IP recorded", sessionID);
+            return false;
+        }
 
         bool result = travel.ClientIPAddress == reportedIP;
         if(!result && !string.IsNullOrEmpty(m_MyExternalIP))
