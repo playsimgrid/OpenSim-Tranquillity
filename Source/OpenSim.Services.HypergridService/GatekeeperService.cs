@@ -663,6 +663,16 @@ public class GatekeeperService : IGatekeeperService
         }
         else
         {
+            // SECURITY (SSRF): userURL came from the arriving circuit, i.e. from the caller,
+            // and this callback runs BEFORE the ban and foreign-agent checks. Refuse internal
+            // targets before making the request.
+            if (!HypergridEgressFilter.IsAllowedTarget(userURL, out string egressReason))
+            {
+                m_log.WarnFormat("[GATEKEEPER SERVICE]: Refusing agent verification callback to {0}: {1}",
+                        userURL, egressReason);
+                return false;
+            }
+
             IUserAgentService userAgentService = new UserAgentServiceConnector(userURL);
 
             try
