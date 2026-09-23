@@ -315,6 +315,22 @@ namespace OpenSim.Services.HypergridService
         }
 
         #region Login Agent
+        /// <summary>
+        /// True when a traveller-supplied HomeURI names THIS grid (or names nothing, which a
+        /// local arrival does). Host names disagree about capitalisation and trailing slashes
+        /// across a hypergrid hop, so compare case- and slash-insensitively.
+        /// </summary>
+        private static bool IsThisGridHome(string authURL)
+        {
+            if (string.IsNullOrEmpty(authURL))
+                return true;
+
+            if (string.IsNullOrEmpty(m_gatekeeperURL))
+                return false;
+
+            return authURL.TrimEnd('/').Equals(m_gatekeeperURL.TrimEnd('/'), StringComparison.InvariantCultureIgnoreCase);
+        }
+
         public bool LoginAgent(GridRegion source, AgentCircuitData aCircuit, GridRegion destination, out string reason)
         {
             reason = string.Empty;
@@ -477,6 +493,23 @@ namespace OpenSim.Services.HypergridService
                     {
                         if (guinfo.Online && !guinfo.LastRegionID.IsZero())
                         {
+                            // SECURITY: only displace an existing session for the SAME identity.
+                            //
+                            // For a local account uui is the bare AgentID, so the lookup finds that local
+                            // user's session whatever HomeURI the caller claimed - and the caller controls
+                            // BOTH the claimed HomeURI and the callback used to "verify" it. A foreign
+                            // arrival presenting a local user's public UUID could god-kill their real session.
+                            if (account is not null && !IsThisGridHome(authURL))
+                            {
+                                m_log.WarnFormat(
+                                    "[GATEKEEPER SERVICE]: Refusing arrival for local account {0} claiming home {1}; not killing the existing session",
+                                    agentID, string.IsNullOrEmpty(authURL) ? "(none)" : authURL);
+                                reason = "You appear to be already logged in on the destination grid " +
+                                        "Please wait a a minute or two and retry. " +
+                                        "If this takes longer than a few minutes please contact the grid owner.";
+                                return false;
+                            }
+
                             if (SendAgentGodKillToRegion(UUID.Zero, agentID, uui, guinfo))
                             {
                                 if (account is not null)

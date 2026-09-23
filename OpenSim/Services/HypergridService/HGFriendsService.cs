@@ -171,11 +171,32 @@ namespace OpenSim.Services.HypergridService
 
         public bool DeleteFriendship(FriendInfo friend, string secret)
         {
+            // SECURITY: require an EXACT match on both the friend UUID and the FULL secret.
+            //
+            // This was StartsWith(friend.Friend) && EndsWith(secret). An empty friend identifier
+            // made the prefix match EVERY stored friendship, and a short secret suffix fell to
+            // brute force over a tiny space - so a public UUID was enough to empty someone's
+            // friends list, one silent request at a time, with no notification to the victim.
+            //
+            // Parsed with the same helper the legitimate paths use rather than by string shape.
+            if (string.IsNullOrEmpty(secret))
+                return false;
+
+            if (!Util.ParseUniversalUserIdentifier(friend.Friend, out UUID requestedFriendID, out _, out _, out _, out _))
+                return false;
+
             FriendInfo[] finfos = m_FriendsService.GetFriends(friend.PrincipalID);
             foreach (FriendInfo finfo in finfos)
             {
-                // We check the secret here. Or if the friendship request was initiated here, and was declined
-                if (finfo.Friend.StartsWith(friend.Friend) && finfo.Friend.EndsWith(secret))
+                if (!Util.ParseUniversalUserIdentifier(finfo.Friend, out UUID storedFriendID, out _, out _, out _, out string storedSecret))
+                    continue;
+
+                // A bare local friendship parses to an empty secret. Those are deliberately NOT
+                // deletable through this remote path - local unfriending uses a different one.
+                if (string.IsNullOrEmpty(storedSecret))
+                    continue;
+
+                if (storedFriendID.Equals(requestedFriendID) && storedSecret.Equals(secret, StringComparison.Ordinal))
                 {
                     m_log.DebugFormat("[HGFRIENDS SERVICE]: Delete friendship {0} {1}", friend.PrincipalID, friend.Friend);
                     m_FriendsService.Delete(friend.PrincipalID, finfo.Friend);
