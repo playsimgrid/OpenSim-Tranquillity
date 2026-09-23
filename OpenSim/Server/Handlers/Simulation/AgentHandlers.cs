@@ -274,6 +274,17 @@ namespace OpenSim.Server.Handlers.Simulation
                 }
                 case "POST":
                 {
+                    // SECURITY: control-plane endpoint; only this grid's own servers call it.
+                    // 404 rather than 403 so it does not confirm itself to a scanner, and the
+                    // script-marker check stops a script on one of OUR regions relaying past the
+                    // address allowlist. Off unless configured - see ControlPlaneGate.
+                    if (ControlPlaneGate.HasInWorldScriptMarker(httpRequest.Headers) ||
+                            !ControlPlaneGate.Allow(httpRequest.RemoteIPEndPoint, "agent-create"))
+                    {
+                        httpResponse.StatusCode = (int)HttpStatusCode.NotFound;
+                        return;
+                    }
+
                     if (agentID.IsZero())
                     {
                         httpResponse.StatusCode = (int)HttpStatusCode.BadRequest;

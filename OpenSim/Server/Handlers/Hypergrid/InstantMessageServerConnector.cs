@@ -84,6 +84,16 @@ namespace OpenSim.Server.Handlers.Hypergrid
             return m_IMService;
         }
 
+        /// <summary>
+        /// Dialogs that carry authority rather than conversation: the nonlocal/grid kick and
+        /// the god-summons teleport. Everything else stays open so federation keeps working.
+        /// </summary>
+        private static bool IsPrivilegedDialog(byte dialog)
+        {
+            return dialog == 250
+                || dialog == (byte)InstantMessageDialog.GodLikeRequestTeleport;
+        }
+
         protected virtual XmlRpcResponse ProcessInstantMessage(XmlRpcRequest request, IPEndPoint remoteClient)
         {
             bool successful = false;
@@ -219,7 +229,18 @@ namespace OpenSim.Server.Handlers.Hypergrid
                     gim.Position = Position;
                     gim.binaryBucket = binaryBucket;
 
-                    successful = m_IMService.IncomingInstantMessage(gim);
+                    // SECURITY: unauthenticated ingress that does not distinguish a privileged control
+                    // dialog from chat. Gate only the privileged ones - conversational dialogs must keep
+                    // flowing cross-grid. The shared message key is not usable here: this path never
+                    // checks one, and it is attached to messages forwarded to foreign grids anyway.
+                    if (IsPrivilegedDialog(dialog) && !ControlPlaneGate.Allow(remoteClient, "im-dialog-" + dialog))
+                    {
+                        successful = false;
+                    }
+                    else
+                    {
+                        successful = m_IMService.IncomingInstantMessage(gim);
+                    }
 
                 }
             }

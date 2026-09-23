@@ -81,6 +81,18 @@ namespace OpenSim.Region.CoreModules.Avatar.Friends
                 return;
             }
 
+            // SECURITY: control-plane endpoint; only this grid's own regions call it.
+            // 404 rather than 403 so it does not confirm itself to a scanner, and the
+            // script-marker check stops a script on one of OUR regions relaying past the
+            // address allowlist. Off unless configured - see ControlPlaneGate.
+            if (ControlPlaneGate.HasInWorldScriptMarker(httpRequest.Headers) ||
+                    !ControlPlaneGate.Allow(httpRequest.RemoteIPEndPoint, "region-friends"))
+            {
+                httpResponse.StatusCode = (int)HttpStatusCode.NotFound;
+                return;
+            }
+
+
             httpResponse.KeepAlive = false;
             httpResponse.StatusCode = (int)HttpStatusCode.OK;
             httpResponse.ContentType = "text/xml";

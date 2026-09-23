@@ -43,6 +43,10 @@ namespace OpenSim.Server.Handlers.Simulation
         public SimulationServiceInConnector(IConfigSource config, IHttpServer server, IScene scene) :
                 base(config, server, String.Empty)
         {
+            // Idempotent: whichever connector starts first wins. No single startup hook
+            // is shared by the region and ROBUST processes, so several call it on purpose.
+            ControlPlaneGate.Initialise(config);
+
             m_LocalSimulationService = scene.RequestModuleInterface<ISimulationService>();
             m_LocalSimulationService = m_LocalSimulationService.GetInnerService();
 
