@@ -26,6 +26,7 @@
  */
 
 using System;
+using OpenSim.Framework;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -440,6 +441,35 @@ namespace OpenSim.Framework.Servers.HttpServer
         }
 
         // JsonRPC
+        /// <summary>
+        /// Methods only this grid's own servers may call. Kept beside the handler table so the
+        /// 2-argument registration keeps its old meaning: a caller that does not opt in stays
+        /// public, which is what every existing call wants.
+        /// </summary>
+        private readonly HashSet<string> m_trustedOnlyJsonRpcMethods = new HashSet<string>();
+
+        /// <summary>
+        /// Register a JSON-RPC method only this grid's own servers may call. A request from
+        /// anywhere else is answered exactly as an unknown method is, so the gate does not tell
+        /// a caller that the method exists.
+        /// </summary>
+        public bool AddJsonRPCHandler(string method, JsonRPCMethod handler, bool trustedOnly)
+        {
+            if (trustedOnly)
+            {
+                lock (m_trustedOnlyJsonRpcMethods)
+                    m_trustedOnlyJsonRpcMethods.Add(method);
+            }
+
+            return AddJsonRPCHandler(method, handler);
+        }
+
+        private bool IsTrustedOnlyJsonRpc(string method)
+        {
+            lock (m_trustedOnlyJsonRpcMethods)
+                return m_trustedOnlyJsonRpcMethods.Contains(method);
+        }
+
         public bool AddJsonRPCHandler(string method, JsonRPCMethod handler)
         {
             lock(jsonRpcHandlers)
@@ -1450,7 +1480,13 @@ namespace OpenSim.Framework.Servers.HttpServer
                     jsonRpcResponse.JsonRpc = "2.0";
 
                     string methodname = jsonRpcRequest["method"];
-                    if (!string.IsNullOrWhiteSpace(methodname) && jsonRpcHandlers.TryGetValue(methodname, out JsonRPCMethod method))
+                    // SECURITY: a trusted-only method is answered as though it did not exist when the
+                    // caller is not one of ours. Falling through to the same "No handler defined" branch
+                    // is deliberate - a distinct forbidden reply would confirm the method is there.
+                    bool jsonRpcGated = !string.IsNullOrWhiteSpace(methodname)
+                            && IsTrustedOnlyJsonRpc(methodname)
+                            && !ControlPlaneGate.Allow(request.RemoteIPEndPoint, "jsonrpc-" + methodname);
+                    if (!jsonRpcGated && !string.IsNullOrWhiteSpace(methodname) && jsonRpcHandlers.TryGetValue(methodname, out JsonRPCMethod method))
                     {
                         try
                         {

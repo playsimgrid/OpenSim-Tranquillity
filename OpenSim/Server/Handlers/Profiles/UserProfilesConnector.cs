@@ -86,24 +86,29 @@ namespace OpenSim.Server.Handlers.Profiles
 
             JsonRpcProfileHandlers handler = new JsonRpcProfileHandlers(ServiceModule);
 
+            // SECURITY: split by what each method EXPOSES, not read vs write. Cross-grid profile
+            // viewing must stay open, so the profile/picks/classifieds reads are public. The email
+            // address, the user's private notes, the app-data store and every mutation are gated -
+            // including two READS (avatarnotesrequest, user_preferences_request), which is the bit
+            // that gating only _update/_delete would miss.
             Server.AddJsonRPCHandler("avatarclassifiedsrequest", handler.AvatarClassifiedsRequest);
-            Server.AddJsonRPCHandler("classified_update", handler.ClassifiedUpdate);
+            Server.AddJsonRPCHandler("classified_update", handler.ClassifiedUpdate, true);
             Server.AddJsonRPCHandler("classifieds_info_query", handler.ClassifiedInfoRequest);
-            Server.AddJsonRPCHandler("classified_delete", handler.ClassifiedDelete);
+            Server.AddJsonRPCHandler("classified_delete", handler.ClassifiedDelete, true);
             Server.AddJsonRPCHandler("avatarpicksrequest", handler.AvatarPicksRequest);
             Server.AddJsonRPCHandler("pickinforequest", handler.PickInfoRequest);
-            Server.AddJsonRPCHandler("picks_update", handler.PicksUpdate);
-            Server.AddJsonRPCHandler("picks_delete", handler.PicksDelete);
-            Server.AddJsonRPCHandler("avatarnotesrequest", handler.AvatarNotesRequest);
-            Server.AddJsonRPCHandler("avatar_notes_update", handler.NotesUpdate);
+            Server.AddJsonRPCHandler("picks_update", handler.PicksUpdate, true);
+            Server.AddJsonRPCHandler("picks_delete", handler.PicksDelete, true);
+            Server.AddJsonRPCHandler("avatarnotesrequest", handler.AvatarNotesRequest, true);
+            Server.AddJsonRPCHandler("avatar_notes_update", handler.NotesUpdate, true);
             Server.AddJsonRPCHandler("avatar_properties_request", handler.AvatarPropertiesRequest);
-            Server.AddJsonRPCHandler("avatar_properties_update", handler.AvatarPropertiesUpdate);
-            Server.AddJsonRPCHandler("avatar_interests_update", handler.AvatarInterestsUpdate);
-            Server.AddJsonRPCHandler("user_preferences_update", handler.UserPreferenecesUpdate);
-            Server.AddJsonRPCHandler("user_preferences_request", handler.UserPreferencesRequest);
+            Server.AddJsonRPCHandler("avatar_properties_update", handler.AvatarPropertiesUpdate, true);
+            Server.AddJsonRPCHandler("avatar_interests_update", handler.AvatarInterestsUpdate, true);
+            Server.AddJsonRPCHandler("user_preferences_update", handler.UserPreferenecesUpdate, true);
+            Server.AddJsonRPCHandler("user_preferences_request", handler.UserPreferencesRequest, true);
             Server.AddJsonRPCHandler("image_assets_request", handler.AvatarImageAssetsRequest);
-            Server.AddJsonRPCHandler("user_data_request", handler.RequestUserAppData);
-            Server.AddJsonRPCHandler("user_data_update", handler.UpdateUserAppData);
+            Server.AddJsonRPCHandler("user_data_request", handler.RequestUserAppData, true);
+            Server.AddJsonRPCHandler("user_data_update", handler.UpdateUserAppData, true);
         }
     }
 }

@@ -83,6 +83,12 @@ namespace OpenSim.Framework.Servers.HttpServer
         bool AddJsonRPCHandler(string method, JsonRPCMethod handler);
 
         /// <summary>
+        /// Register a JSON-RPC method only this grid's own servers may call. Requests from
+        /// elsewhere are answered as an unknown method, so the gate does not disclose it.
+        /// </summary>
+        bool AddJsonRPCHandler(string method, JsonRPCMethod handler, bool trustedOnly);
+
+        /// <summary>
         /// Websocket HTTP server handlers.
         /// </summary>
         /// <param name="servicepath"></param>
