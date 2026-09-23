@@ -135,6 +135,15 @@ namespace OpenSim.Groups
                 request.Remove("METHOD");
 
                 m_log.DebugFormat("[Groups.RobustHGConnector]: {0}", method);
+                // SECURITY: gate the two WRITE methods (group create, notice injection) to our own
+                // servers - they validate no token and we do not accept external group writes. Reads
+                // and per-membership-token methods stay open. Off/observe/enforce like the rest.
+                if ((method == "POSTGROUP" || method == "ADDNOTICE") &&
+                        !ControlPlaneGate.Allow(httpRequest.RemoteIPEndPoint, "groups-" + method))
+                {
+                    return FailureResult();
+                }
+
                 switch (method)
                 {
                     case "POSTGROUP":
