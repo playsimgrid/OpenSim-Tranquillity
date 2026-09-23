@@ -85,23 +85,41 @@ public class UserProfilesConnector: ServiceConnector
 
         JsonRpcProfileHandlers handler = new JsonRpcProfileHandlers(ServiceModule);
 
+        // SECURITY: this dispatch has no notion of an authenticated caller, so the sensitive
+        // methods sat wide open next to the legitimately public ones. A blanket gate is WRONG:
+        // foreign grids genuinely read a local user's public profile, picks and classifieds
+        // over the hypergrid, and refusing those breaks cross-grid profile viewing.
+        //
+        // So the split below is by what the method exposes, not by read vs write:
+        //
+        //   public        - the profile, picks and classifieds a foreign grid may display
+        //   trusted-only  - the email address, the user's PRIVATE notes, the app-data store,
+        //                   and every write or delete of profile content
+        //
+        // Note avatarnotesrequest and user_preferences_request are READS and are still gated:
+        // one returns private notes, the other returns the email address. The owner's own
+        // viewer reaches these from inside a trusted region, so that keeps working.
+
+        // Public: cross-grid profile viewing.
         Server.AddJsonRPCHandler("avatarclassifiedsrequest", handler.AvatarClassifiedsRequest);
-        Server.AddJsonRPCHandler("classified_update", handler.ClassifiedUpdate);
         Server.AddJsonRPCHandler("classifieds_info_query", handler.ClassifiedInfoRequest);
-        Server.AddJsonRPCHandler("classified_delete", handler.ClassifiedDelete);
         Server.AddJsonRPCHandler("avatarpicksrequest", handler.AvatarPicksRequest);
         Server.AddJsonRPCHandler("pickinforequest", handler.PickInfoRequest);
-        Server.AddJsonRPCHandler("picks_update", handler.PicksUpdate);
-        Server.AddJsonRPCHandler("picks_delete", handler.PicksDelete);
-        Server.AddJsonRPCHandler("avatarnotesrequest", handler.AvatarNotesRequest);
-        Server.AddJsonRPCHandler("avatar_notes_update", handler.NotesUpdate);
         Server.AddJsonRPCHandler("avatar_properties_request", handler.AvatarPropertiesRequest);
-        Server.AddJsonRPCHandler("avatar_properties_update", handler.AvatarPropertiesUpdate);
-        Server.AddJsonRPCHandler("avatar_interests_update", handler.AvatarInterestsUpdate);
-        Server.AddJsonRPCHandler("user_preferences_update", handler.UserPreferenecesUpdate);
-        Server.AddJsonRPCHandler("user_preferences_request", handler.UserPreferencesRequest);
         Server.AddJsonRPCHandler("image_assets_request", handler.AvatarImageAssetsRequest);
-        Server.AddJsonRPCHandler("user_data_request", handler.RequestUserAppData);
-        Server.AddJsonRPCHandler("user_data_update", handler.UpdateUserAppData);
+
+        // Trusted-only: private data, and every mutation.
+        Server.AddJsonRPCHandler("classified_update", handler.ClassifiedUpdate, true);
+        Server.AddJsonRPCHandler("classified_delete", handler.ClassifiedDelete, true);
+        Server.AddJsonRPCHandler("picks_update", handler.PicksUpdate, true);
+        Server.AddJsonRPCHandler("picks_delete", handler.PicksDelete, true);
+        Server.AddJsonRPCHandler("avatarnotesrequest", handler.AvatarNotesRequest, true);
+        Server.AddJsonRPCHandler("avatar_notes_update", handler.NotesUpdate, true);
+        Server.AddJsonRPCHandler("avatar_properties_update", handler.AvatarPropertiesUpdate, true);
+        Server.AddJsonRPCHandler("avatar_interests_update", handler.AvatarInterestsUpdate, true);
+        Server.AddJsonRPCHandler("user_preferences_update", handler.UserPreferenecesUpdate, true);
+        Server.AddJsonRPCHandler("user_preferences_request", handler.UserPreferencesRequest, true);
+        Server.AddJsonRPCHandler("user_data_request", handler.RequestUserAppData, true);
+        Server.AddJsonRPCHandler("user_data_update", handler.UpdateUserAppData, true);
     }
 }
