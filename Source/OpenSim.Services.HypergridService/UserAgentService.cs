@@ -157,6 +157,10 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
                 if(ip is null)
                     throw new Exception(String.Format("[UserAgentService] failed to resolve gatekeeper host"));
                 m_MyExternalIP = ip.ToString();
+
+                // Our own gateway is always a permitted egress target, even if it resolves
+                // privately. Set AFTER normalisation so it is a parseable absolute URI.
+                HypergridEgressFilter.LocalGatewayURL = m_GridName;
             }
             // Finally some cleanup
             m_Database.DeleteOld();
@@ -342,6 +346,18 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
             }
         }
 
+        // SECURITY (SSRF): the gatekeeper URL came from the caller. Refuse to aim this
+        // process at loopback, the private network, or a metadata endpoint before we post
+        // to it. A real foreign grid is publicly routable, so this costs legitimate travel
+        // nothing. Checked here, before CreateAgent below fetches it.
+        if (!HypergridEgressFilter.IsAllowedTarget(gatekeeper.ServerURI, out string egressReason))
+        {
+            m_log.WarnFormat("[USER AGENT SERVICE]: Refusing hypergrid login to {0}: {1}",
+                    gatekeeper.ServerURI, egressReason);
+            reason = "Destination grid is not reachable from this grid";
+            return false;
+        }
+
         // Generate a new service session
         agentCircuit.ServiceSessionID = region.ServerURI + ";" + UUID.Random();
         TravelingAgentInfo travel = CreateTravelInfo(agentCircuit, region, fromLogin, out TravelingAgentInfo old);
@@ -424,6 +440,29 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
 
     public void LogoutAgent(UUID userID, UUID sessionID)
     {
+        // SECURITY: require the caller to name a session that actually belongs to this user.
+        //
+        // This is reachable unauthenticated over XMLRPC (logout_agent) and acted on any
+        // user/session pair it was handed. Marking a user offline is not merely disruptive:
+        // the "online" flag is what gates duplicate-presence protection, so forcing a user
+        // offline lets a fresh login proceed WITHOUT displacing the existing session.
+        //
+        // A legitimate caller - our own region telling the home grid a traveller logged out -
+        // always names a real travel row for that user, so this costs it nothing. A caller
+        // guessing at UUIDs has no row to name.
+        HGTravelingData hgt = m_Database.Get(sessionID);
+        if (hgt is null)
+        {
+            m_log.LogWarning("[USER AGENT SERVICE]: Refusing logout for {0}: no travel session {1}", userID, sessionID);
+            return;
+        }
+
+        if (new UUID(hgt.UserID) != userID)
+        {
+            m_log.LogWarning("[USER AGENT SERVICE]: Refusing logout: session {0} belongs to {1}, not {2}", sessionID, hgt.UserID, userID);
+            return;
+        }
+
         m_log.LogDebug("[USER AGENT SERVICE]: User {0} logged out", userID);
 
         m_Database.Delete(sessionID);
