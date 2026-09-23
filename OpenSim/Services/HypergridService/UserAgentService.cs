@@ -158,6 +158,9 @@ namespace OpenSim.Services.HypergridService
                     if(ip is null)
                         throw new Exception(String.Format("[UserAgentService] failed to resolve gatekeeper host"));
                     m_MyExternalIP = ip.ToString();
+
+                    // Our own gateway is always a permitted egress target.
+                    HypergridEgressFilter.LocalGatewayURL = m_GridName;
                 }
                 // Finally some cleanup
                 m_Database.DeleteOld();
@@ -339,6 +342,15 @@ namespace OpenSim.Services.HypergridService
                 }
             }
 
+            // SECURITY (SSRF): the gatekeeper URL came from the caller. Refuse to aim this
+            // process at loopback, the private network, or a metadata endpoint before posting.
+            if (!HypergridEgressFilter.IsAllowedTarget(gatekeeper.ServerURI, out string egressReason))
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: Refusing hypergrid login to {0}: {1}", gatekeeper.ServerURI, egressReason);
+                reason = "Destination grid is not reachable from this grid";
+                return false;
+            }
+
             // Generate a new service session
             agentCircuit.ServiceSessionID = region.ServerURI + ";" + UUID.Random();
             TravelingAgentInfo travel = CreateTravelInfo(agentCircuit, region, fromLogin, out TravelingAgentInfo old);
@@ -421,6 +433,23 @@ namespace OpenSim.Services.HypergridService
 
         public void LogoutAgent(UUID userID, UUID sessionID)
         {
+            // SECURITY: require the caller to name a session that actually belongs to this user.
+            // Reachable unauthenticated over XMLRPC (logout_agent) and acted on any pair handed
+            // to it. Marking a user offline also defeats duplicate-presence protection, since the
+            // online flag is what gates it. A legitimate caller always names a real travel row.
+            HGTravelingData hgt = m_Database.Get(sessionID);
+            if (hgt is null)
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: Refusing logout for {0}: no travel session {1}", userID, sessionID);
+                return;
+            }
+
+            if (new UUID(hgt.UserID) != userID)
+            {
+                m_log.WarnFormat("[USER AGENT SERVICE]: Refusing logout: session {0} belongs to {1}, not {2}", sessionID, hgt.UserID, userID);
+                return;
+            }
+
             m_log.DebugFormat("[USER AGENT SERVICE]: User {0} logged out", userID);
 
             m_Database.Delete(sessionID);
