@@ -277,13 +277,51 @@ public class HttpRequest : IHttpRequest
 
     public IPEndPoint LocalIPEndPoint { get {return m_context.LocalIPEndPoint; }}
 
+    /// <summary>
+    /// Reverse proxies whose x-forwarded-for / forwarded headers this server will believe.
+    /// Empty (the default) means no header is ever honoured and the socket peer always wins.
+    /// Set once at startup from config; never mutated per request.
+    /// </summary>
+    public static IPAddress[] TrustedForwardedProxies = Array.Empty<IPAddress>();
+
+    private static bool IsTrustedForwardingPeer(IPEndPoint peer)
+    {
+        IPAddress[] trusted = TrustedForwardedProxies;
+        if (peer is null || trusted is null || trusted.Length == 0)
+            return false;
+
+        for (int i = 0; i < trusted.Length; ++i)
+        {
+            if (peer.Address.Equals(trusted[i]))
+                return true;
+        }
+
+        return false;
+    }
+
+
     public IPEndPoint RemoteIPEndPoint
     {
         get
         {
             if(m_remoteIPEndPoint == null)
             {
-                string addr = m_headers["x-forwarded-for"];
+                // SECURITY: only a trusted reverse proxy may rename the caller.
+                //
+                // m_context.LocalIPEndPoint is MISNAMED - HttpClientContext assigns it the
+                // remoteEndPoint of the connection ("client that connected"), so it IS the real
+                // socket peer. Before this check, an x-forwarded-for header from ANY peer
+                // replaced that peer for every IP-based decision on the public ports: bans,
+                // logging, and any source-address allowlist built on top of this property.
+                //
+                // TrustedForwardedProxies is EMPTY by default, which means the header is
+                // ignored. That is the right default: a grid with no reverse proxy - the common
+                // case, and ours - has nothing that legitimately sets this header, so anything
+                // that does is lying. Operators who do front ROBUST with a proxy list its
+                // addresses in config.
+                string addr = IsTrustedForwardingPeer(m_context.LocalIPEndPoint)
+                        ? m_headers["x-forwarded-for"]
+                        : null;
                 if(!string.IsNullOrEmpty(addr))
                 {
                     int port = m_context.LocalIPEndPoint.Port;
