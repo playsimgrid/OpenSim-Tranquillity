@@ -61,6 +61,11 @@ public class InstantMessageServerConnector : ServiceConnector
     public InstantMessageServerConnector(IConfigSource config, IHttpServer server, IInstantMessageSimConnector simConnector) :
             base(config, server, String.Empty)
     {
+        // Read the control-plane gate configuration. Idempotent: whichever connector
+        // starts first wins, and there is no single startup hook shared by the region
+        // and ROBUST processes, so several call it on purpose.
+        ControlPlaneGate.Initialise(config);
+
         IConfig gridConfig = config.Configs["HGInstantMessageService"];
         if (gridConfig != null)
         {
@@ -79,6 +84,17 @@ public class InstantMessageServerConnector : ServiceConnector
     public IInstantMessage GetService()
     {
         return m_IMService;
+    }
+
+    /// <summary>
+    /// Dialogs that carry authority rather than conversation: the nonlocal/grid kick, and the
+    /// god-summons teleport. Everything else - text, typing, teleport offers, inventory,
+    /// group and friendship traffic - is conversational and must keep flowing cross-grid.
+    /// </summary>
+    private static bool IsPrivilegedDialog(byte dialog)
+    {
+        return dialog == 250                                                // nonlocal / grid kick
+            || dialog == (byte)InstantMessageDialog.GodLikeRequestTeleport;
     }
 
     protected virtual XmlRpcResponse ProcessInstantMessage(XmlRpcRequest request, IPEndPoint remoteClient)
@@ -216,7 +232,25 @@ public class InstantMessageServerConnector : ServiceConnector
                 gim.Position = Position;
                 gim.binaryBucket = binaryBucket;
 
-                successful = m_IMService.IncomingInstantMessage(gim);
+                // SECURITY: this ingress is unauthenticated and does not distinguish a
+                // privileged control dialog from an ordinary chat message, so a caller can
+                // deliver a grid kick (dialog 250, acted on purely because it carries the
+                // well-known services god id) or a god-summons teleport, which viewers
+                // commonly auto-accept. Conversational dialogs stay open so federation keeps
+                // working - only the privileged ones are gated.
+                //
+                // The shared cross-grid message key is NOT usable here: this path never
+                // checks one, and the key is attached to messages forwarded to foreign grids
+                // anyway, so any grid that receives one learns it. Source address it is.
+                if (IsPrivilegedDialog(dialog) &&
+                        !ControlPlaneGate.Allow(remoteClient, "im-dialog-" + dialog))
+                {
+                    successful = false;
+                }
+                else
+                {
+                    successful = m_IMService.IncomingInstantMessage(gim);
+                }
 
             }
         }

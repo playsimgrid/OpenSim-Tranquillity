@@ -41,6 +41,11 @@ public class SimulationServiceInConnector : ServiceConnector
     public SimulationServiceInConnector(IConfigSource config, IHttpServer server, IScene scene) :
             base(config, server, String.Empty)
     {
+        // Read the control-plane gate configuration. Idempotent: whichever connector
+        // starts first wins, and there is no single startup hook shared by the region
+        // and ROBUST processes, so several call it on purpose.
+        ControlPlaneGate.Initialise(config);
+
         m_LocalSimulationService = scene.RequestModuleInterface<ISimulationService>();
         m_LocalSimulationService = m_LocalSimulationService.GetInnerService();
 
