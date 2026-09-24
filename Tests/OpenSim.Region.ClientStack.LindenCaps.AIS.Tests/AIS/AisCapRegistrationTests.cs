@@ -56,6 +56,7 @@ public class AisCapRegistrationTests
         public void HandleXmlRpcRequests(OSHttpRequest request, OSHttpResponse response) { }
         public void HandleXmlRpcRequests(OSHttpRequest request, OSHttpResponse response, Dictionary<string, XmlRpcMethod> rpcHandlers) { }
         public bool AddJsonRPCHandler(string method, JsonRPCMethod handler) => true;
+        public bool AddJsonRPCHandler(string method, JsonRPCMethod handler, bool trustedOnly) => true;
         public void AddWebSocketHandler(string servicepath, BaseHttpServer.WebSocketRequestDelegate handler) { }
         public void RemoveWebSocketHandler(string servicepath) { }
         public XmlRpcMethod GetXmlRPCHandler(string method) => null;

@@ -503,7 +503,7 @@ public class GatekeeperService : IGatekeeperService
                         // applied before the kill instead of after it.
                         if (account is not null && !IsThisGridHome(authURL))
                         {
-                            m_log.WarnFormat(
+                            m_log.LogWarning(
                                 "[GATEKEEPER SERVICE]: Refusing arrival for local account {0} claiming home {1}; not killing the existing session",
                                 agentID, string.IsNullOrEmpty(authURL) ? "(none)" : authURL);
                             reason = "You appear to be already logged in on the destination grid " +
@@ -668,7 +668,7 @@ public class GatekeeperService : IGatekeeperService
             // targets before making the request.
             if (!HypergridEgressFilter.IsAllowedTarget(userURL, out string egressReason))
             {
-                m_log.WarnFormat("[GATEKEEPER SERVICE]: Refusing agent verification callback to {0}: {1}",
+                m_log.LogWarning("[GATEKEEPER SERVICE]: Refusing agent verification callback to {0}: {1}",
                         userURL, egressReason);
                 return false;
             }

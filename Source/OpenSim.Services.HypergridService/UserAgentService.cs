@@ -352,7 +352,7 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         // nothing. Checked here, before CreateAgent below fetches it.
         if (!HypergridEgressFilter.IsAllowedTarget(gatekeeper.ServerURI, out string egressReason))
         {
-            m_log.WarnFormat("[USER AGENT SERVICE]: Refusing hypergrid login to {0}: {1}",
+            m_log.LogWarning("[USER AGENT SERVICE]: Refusing hypergrid login to {0}: {1}",
                     gatekeeper.ServerURI, egressReason);
             reason = "Destination grid is not reachable from this grid";
             return false;
