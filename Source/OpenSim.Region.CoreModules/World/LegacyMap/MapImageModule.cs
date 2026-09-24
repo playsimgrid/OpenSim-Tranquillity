@@ -133,6 +133,7 @@ public class MapImageModule : IMapImageGenerator, INonSharedRegionModule
                 }
 
                 float heightRange = maxHeight - minHeight;
+                bool flatTerrain = !(heightRange > 0f); // flat region: heightRange 0 -> divide-by-0 NaN -> broken tile
                 
                 // Render terrain
                 int index = 0;
@@ -147,7 +148,7 @@ public class MapImageModule : IMapImageGenerator, INonSharedRegionModule
                     {
                         float height = heightData[index++];
                         // Normalize height to 0-255 range
-                        byte gray = (byte)(((height - minHeight) / heightRange) * 255);
+                        byte gray = flatTerrain ? (byte)128 : (byte)(((height - minHeight) / heightRange) * 255);
                         
                         // Apply some lighting to create terrain shading
                         byte shaded = (byte)(gray * 0.8f); // Darken slightly

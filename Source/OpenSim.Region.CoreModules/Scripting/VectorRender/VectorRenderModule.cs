@@ -81,7 +81,8 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
         return new J2KEncoderConfiguration()
             .WithTiles(t => t.SetSize(width, height))
             .WithWavelet(w => w.UseIrreversible97().WithDecompositionLevels(5))
-            .WithProgression(p => p.WithOrder(ProgressionOrder.LRCP).WithQualityLayers(0.1f, 0.5f, 1.0f));
+            .WithProgression(p => p.WithOrder(ProgressionOrder.LRCP).WithQualityLayers(0.1f, 0.5f, 1.0f))
+            .WithFileFormat(false); // raw J2C codestream; SL viewers cannot render JP2-wrapped dynamic textures (blank, no error)
     }
 
     private Scene m_scene;
