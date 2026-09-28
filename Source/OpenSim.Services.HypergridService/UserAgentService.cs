@@ -232,7 +232,9 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         m_log.LogDebug("[USER AGENT SERVICE]: Request to login user {0} {1} (@{2}) to grid {3}",
             agentCircuit.firstname, agentCircuit.lastname, (fromLogin ? agentCircuit.IPAddress : "stored IP"), gatekeeper.ServerURI);
 
-        string gridName = gatekeeper.ServerURI.ToLowerInvariant();
+        string gridName = NormalizeGridURI(gatekeeper.ServerURI);
+        // A non-login launch to this grid (a return home) is authorised below by HomeLaunchAuthorization
+        bool toLocalGrid = IsLocalGridURI(m_GridName, gridName);
 
         UserAccount account = m_UserAccountService.GetUserAccount(UUID.Zero, agentCircuit.AgentID);
         if (account is null)
@@ -243,7 +245,7 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         }
 
         // Is this user allowed to go there?
-        if (m_GridName != gridName)
+        if (!toLocalGrid)
         {
             if (m_ForeignTripsAllowed.ContainsKey(account.UserLevel))
             {
@@ -309,8 +311,8 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
                     agentID: agentCircuit.AgentID,
                     storedToken: existingTravel?.ServiceToken,
                     presentedToken: presentedToken,
-                    travelGridExternalName: existingTravel?.GridExternalName,
-                    homeGridName: m_GridName,
+                    travelGridExternalName: NormalizeGridURI(existingTravel?.GridExternalName),
+                    homeGridName: NormalizeGridURI(m_GridName),
                     targetGridName: gridName);
 
             if (decision != HomeLaunchDecision.Allow)
@@ -356,13 +358,20 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
 
         m_log.LogDebug("[USER AGENT SERVICE]: this grid: {0}, desired grid: {1}, desired region: {2}", m_GridName, gridName, region.RegionID);
 
-        if (m_GridName.Equals(gridName, StringComparison.InvariantCultureIgnoreCase))
+        if (toLocalGrid)
         {
             success = m_GatekeeperService.LoginAgent(source, agentCircuit, finalDestination, out reason);
         }
         else
         {
             //TODO: Should there not be a call to QueryAccess here?
+            if (!HypergridEgressPolicy.IsAllowedTarget(region.ServerURI, m_GridName))
+            {
+                reason = "Destination is not allowed";
+                m_log.LogInformation("[USER AGENT SERVICE]: Refusing outbound Hypergrid agent transfer to disallowed target {0}", region.ServerURI);
+                return false;
+            }
+
             EntityTransferContext ctx = new();
             success = m_GatekeeperConnector.CreateAgent(source, region, agentCircuit, (uint)Constants.TeleportFlags.ViaLogin, ctx, out reason);
         }
@@ -390,6 +399,30 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
     public bool LoginAgentToGrid(GridRegion source, AgentCircuitData agentCircuit, GridRegion gatekeeper, GridRegion finalDestination, out string reason)
     {
         return LoginAgentToGrid(source, agentCircuit, gatekeeper, finalDestination, false, out reason);
+    }
+
+    public static bool IsLocalGridURI(string localGridURI, string requestedGridURI)
+    {
+        string local = NormalizeGridURI(localGridURI);
+        string requested = NormalizeGridURI(requestedGridURI);
+
+        if (string.IsNullOrEmpty(local) || string.IsNullOrEmpty(requested))
+            return false;
+
+        return local.Equals(requested, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string NormalizeGridURI(string gridURI)
+    {
+        OSHHTPHost host = new(gridURI, false);
+        if (host.IsValidHost)
+            return host.URIwEndSlash.ToLowerInvariant();
+
+        gridURI = gridURI?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (gridURI.Length > 0 && !gridURI.EndsWith('/'))
+            gridURI += "/";
+
+        return gridURI;
     }
 
     TravelingAgentInfo CreateTravelInfo(AgentCircuitData agentCircuit, GridRegion region, bool fromLogin, out TravelingAgentInfo existing)
@@ -431,6 +464,31 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         GridUserInfo guinfo = m_GridUserService.GetGridUserInfo(userID.ToString());
         if (guinfo is not null)
             m_GridUserService.LoggedOut(userID.ToString(), sessionID, guinfo.LastRegionID, guinfo.LastPosition, guinfo.LastLookAt);
+    }
+
+    public bool IsKnownTravelingAgent(UUID userID, UUID sessionID)
+    {
+        HGTravelingData hgt = m_Database.Get(sessionID);
+        return TravelSessionMatches(hgt, userID, sessionID);
+    }
+
+    public static bool TravelSessionMatches(HGTravelingData travelData, UUID userID, UUID sessionID)
+    {
+        if (travelData == null)
+            return false;
+
+        if (travelData.SessionID != sessionID)
+            return false;
+
+        // The store maps the UserID column to the UserID field; Data only holds the other columns
+        UUID storedUserUUID = travelData.UserID;
+        if (storedUserUUID.IsZero())
+        {
+            if (travelData.Data == null || !travelData.Data.TryGetValue("UserID", out string storedUserID) || !UUID.TryParse(storedUserID, out storedUserUUID))
+                return false;
+        }
+
+        return storedUserUUID.IsNotZero() && storedUserUUID == userID;
     }
 
     // We need to prevent foreign users with the same UUID as a local user
