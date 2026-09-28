@@ -76,7 +76,7 @@ If services sit behind a reverse proxy, put the proxy's source address in `Contr
 
 ### Returning home
 
-Hypergrid return-home requests to the local grid are refused unless they originate from the local login service. Users must log in again to return home. This intentionally disables Hypergrid "go home" return behavior because a visited grid can replay an avatar circuit.
+A Hypergrid launch to the local grid that does not come from the local login service (a return home) must be bound to an existing travel session (`HomeLaunchAuthorization`): the travel row for the session must exist, belong to the same user, hold exactly the service token this grid last issued (it is rotated on every authorised hop), and must not already place the agent on this grid. Regions forward the rotated token as `ServiceSessionID`. A return from a region that does not forward it is refused, and the user must log in again to return home.
 
 ### Egress filtering
 
@@ -119,4 +119,4 @@ Before upgrading a grid that uses Gloebit, back up the database and test the tra
 4. Confirm untrusted requests to protected endpoints receive denial responses.
 5. Keep the service ports behind firewall rules in addition to the application allowlist.
 6. If using Gloebit, test database migrations and an authorization/transaction callback in a non-production environment.
-7. Record that Hypergrid return-home now requires relogin.
+7. Record that Hypergrid return-home needs the visited grid's regions to forward the rotated service token; returns from grids that do not are refused and need a relogin.

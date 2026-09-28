@@ -233,14 +233,8 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
             agentCircuit.firstname, agentCircuit.lastname, (fromLogin ? agentCircuit.IPAddress : "stored IP"), gatekeeper.ServerURI);
 
         string gridName = NormalizeGridURI(gatekeeper.ServerURI);
-
-        if (!fromLogin && IsLocalGridURI(m_GridName, gridName))
-        {
-            reason = "Please log in again to return home";
-            m_log.LogInformation("[USER AGENT SERVICE]: Refusing Hypergrid return-home login for user {0} {1}; return-home requires a fresh login.",
-                agentCircuit.firstname, agentCircuit.lastname);
-            return false;
-        }
+        // A non-login launch to this grid (a return home) is authorised below by HomeLaunchAuthorization
+        bool toLocalGrid = IsLocalGridURI(m_GridName, gridName);
 
         UserAccount account = m_UserAccountService.GetUserAccount(UUID.Zero, agentCircuit.AgentID);
         if (account is null)
@@ -251,7 +245,7 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
         }
 
         // Is this user allowed to go there?
-        if (m_GridName != gridName)
+        if (!toLocalGrid)
         {
             if (m_ForeignTripsAllowed.ContainsKey(account.UserLevel))
             {
@@ -317,8 +311,8 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
                     agentID: agentCircuit.AgentID,
                     storedToken: existingTravel?.ServiceToken,
                     presentedToken: presentedToken,
-                    travelGridExternalName: existingTravel?.GridExternalName,
-                    homeGridName: m_GridName,
+                    travelGridExternalName: NormalizeGridURI(existingTravel?.GridExternalName),
+                    homeGridName: NormalizeGridURI(m_GridName),
                     targetGridName: gridName);
 
             if (decision != HomeLaunchDecision.Allow)
@@ -364,7 +358,7 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
 
         m_log.LogDebug("[USER AGENT SERVICE]: this grid: {0}, desired grid: {1}, desired region: {2}", m_GridName, gridName, region.RegionID);
 
-        if (m_GridName.Equals(gridName, StringComparison.InvariantCultureIgnoreCase))
+        if (toLocalGrid)
         {
             success = m_GatekeeperService.LoginAgent(source, agentCircuit, finalDestination, out reason);
         }

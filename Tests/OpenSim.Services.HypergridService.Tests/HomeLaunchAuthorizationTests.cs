@@ -178,6 +178,36 @@ public class HomeLaunchAuthorizationTests
                 Is.EqualTo(HomeLaunchDecision.RefuseAlreadyHome));
     }
 
+    /// <summary>
+    /// Since #210, LoginAgentToGrid normalises the target gatekeeper URI (lower case, default
+    /// port, trailing slash), so it passes the configured home grid and the stored grid through
+    /// the same normalisation. A GatekeeperURI configured without its port is still this grid,
+    /// and a return home from a foreign grid is still allowed.
+    /// </summary>
+    [Test]
+    public void NormalisedGridNamesStillRecogniseThisGrid()
+    {
+        string home = UserAgentService.NormalizeGridURI("http://playsim.net");
+        string target = UserAgentService.NormalizeGridURI("http://PlaySim.net:80");
+
+        Assert.That(Launch(UserAgentService.NormalizeGridURI("http://playsim.net:80/"), home, target),
+                Is.EqualTo(HomeLaunchDecision.RefuseAlreadyHome));
+        Assert.That(Launch(UserAgentService.NormalizeGridURI("http://" + ForeignGrid), home, target),
+                Is.EqualTo(HomeLaunchDecision.Allow));
+
+        static HomeLaunchDecision Launch(string travelGrid, string homeGrid, string targetGrid) =>
+            HomeLaunchAuthorization.Decide(
+                    fromLogin: false,
+                    travelSessionExists: true,
+                    travelUserID: Traveller,
+                    agentID: Traveller,
+                    storedToken: IssuedToken,
+                    presentedToken: IssuedToken,
+                    travelGridExternalName: travelGrid,
+                    homeGridName: homeGrid,
+                    targetGridName: targetGrid);
+    }
+
     [Test]
     public void AHopOutToAnotherGridIsAllowedEvenWhenTheRowNamesThisGrid()
     {
