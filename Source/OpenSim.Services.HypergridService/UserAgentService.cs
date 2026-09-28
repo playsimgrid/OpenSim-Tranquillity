@@ -474,16 +474,21 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
 
     public static bool TravelSessionMatches(HGTravelingData travelData, UUID userID, UUID sessionID)
     {
-        if (travelData == null || travelData.Data == null)
+        if (travelData == null)
             return false;
 
         if (travelData.SessionID != sessionID)
             return false;
 
-        if (!travelData.Data.TryGetValue("UserID", out string storedUserID) || !UUID.TryParse(storedUserID, out UUID storedUserUUID))
-            return false;
+        // The store maps the UserID column to the UserID field; Data only holds the other columns
+        UUID storedUserUUID = travelData.UserID;
+        if (storedUserUUID.IsZero())
+        {
+            if (travelData.Data == null || !travelData.Data.TryGetValue("UserID", out string storedUserID) || !UUID.TryParse(storedUserID, out storedUserUUID))
+                return false;
+        }
 
-        return storedUserUUID == userID;
+        return storedUserUUID.IsNotZero() && storedUserUUID == userID;
     }
 
     // We need to prevent foreign users with the same UUID as a local user

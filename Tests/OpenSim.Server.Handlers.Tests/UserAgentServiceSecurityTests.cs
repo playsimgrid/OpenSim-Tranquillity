@@ -113,7 +113,7 @@ public class UserAgentServiceSecurityTests
         HGTravelingData travel = new()
         {
             SessionID = sessionID,
-            Data = new Dictionary<string, string> { ["UserID"] = userID.ToString() }
+            UserID = userID
         };
 
         Xunit.Assert.True(UserAgentService.TravelSessionMatches(travel, userID, sessionID));
@@ -127,10 +127,67 @@ public class UserAgentServiceSecurityTests
         HGTravelingData travel = new()
         {
             SessionID = sessionID,
-            Data = new Dictionary<string, string> { ["UserID"] = userID.ToString() }
+            UserID = userID
         };
 
         Xunit.Assert.False(UserAgentService.TravelSessionMatches(travel, UUID.Random(), sessionID));
         Xunit.Assert.False(UserAgentService.TravelSessionMatches(travel, userID, UUID.Random()));
+    }
+
+    // The generic table handlers map the UserID column to the HGTravelingData.UserID field
+    // and put only the remaining columns in Data, so a row read back from the store looks like this.
+    [Xunit.Fact]
+    public void TravelSessionMatchesRowAsReadFromStore()
+    {
+        UUID userID = UUID.Random();
+        UUID sessionID = UUID.Random();
+        HGTravelingData travel = new()
+        {
+            SessionID = sessionID,
+            UserID = userID,
+            Data = new Dictionary<string, string>
+            {
+                ["GridExternalName"] = "http://other.example:8002/",
+                ["ServiceToken"] = "token",
+                ["ClientIPAddress"] = "203.0.113.5",
+                ["MyIPAddress"] = string.Empty,
+                ["TMStamp"] = "2026-01-01 00:00:00"
+            }
+        };
+
+        Xunit.Assert.True(UserAgentService.TravelSessionMatches(travel, userID, sessionID));
+
+        travel.Data = null;
+        Xunit.Assert.True(UserAgentService.TravelSessionMatches(travel, userID, sessionID));
+    }
+
+    [Xunit.Fact]
+    public void TravelSessionUserIDFieldTakesPrecedenceOverData()
+    {
+        UUID userID = UUID.Random();
+        UUID sessionID = UUID.Random();
+        HGTravelingData travel = new()
+        {
+            SessionID = sessionID,
+            UserID = UUID.Random(),
+            Data = new Dictionary<string, string> { ["UserID"] = userID.ToString() }
+        };
+
+        Xunit.Assert.False(UserAgentService.TravelSessionMatches(travel, userID, sessionID));
+    }
+
+    [Xunit.Fact]
+    public void TravelSessionFallsBackToDataUserIDWhenFieldIsZero()
+    {
+        UUID userID = UUID.Random();
+        UUID sessionID = UUID.Random();
+        HGTravelingData travel = new()
+        {
+            SessionID = sessionID,
+            Data = new Dictionary<string, string> { ["UserID"] = userID.ToString() }
+        };
+
+        Xunit.Assert.True(UserAgentService.TravelSessionMatches(travel, userID, sessionID));
+        Xunit.Assert.False(UserAgentService.TravelSessionMatches(travel, UUID.Random(), sessionID));
     }
 }
