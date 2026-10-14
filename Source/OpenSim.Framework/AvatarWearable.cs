@@ -74,6 +74,12 @@ public class AvatarWearable
     public static readonly int UNIVERSAL = 16;
     public static int MAX_WEARABLES = 17;
 
+    // The most items one wearable type holds. Viewers bound clothing by a total across
+    // all types, not per type, so a bound of five here dropped every layer past the
+    // fifth from a server-side bake: nine Universal layers baked as five, the five
+    // changing with the order of the outfit links (Nimbus Grid, 2026-10-14). Sixty is
+    // at or above any viewer's total.
+    public const int MAX_ITEMS_PER_TYPE = 60;
 
     public static readonly UUID DEFAULT_BODY_ITEM = new UUID("66c41e39-38f9-f75a-024e-585989bfaba9");
     public static readonly UUID DEFAULT_BODY_ASSET = new UUID("66c41e39-38f9-f75a-024e-585989bfab73");
@@ -157,7 +163,7 @@ public class AvatarWearable
             m_items[itemID] = assetID;
             return;
         }
-        if (m_ids.Count >= 5)
+        if (m_ids.Count >= MAX_ITEMS_PER_TYPE)
             return;
 
         m_ids.Add(itemID);
