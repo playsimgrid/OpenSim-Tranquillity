@@ -26,6 +26,8 @@
  */
 
 using SkiaSharp;
+using CoreJ2K;
+using CoreJ2K.Configuration;
 using Nini.Config;
 using OpenMetaverse;
 using OpenSim.Framework;
@@ -550,8 +552,8 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
         private byte[] BlendTextures(byte[] frontImage, byte[] backImage, byte newAlpha)
         {
-            // Decode front image using SkiaSharp
-            SKBitmap image1 = SKBitmap.Decode(frontImage);
+            // Decode front image (SkiaSharp first, J2C fallback - a dynamic texture is a J2C codestream)
+            SKBitmap image1 = DecodeImage(frontImage);
             if (image1 == null)
                 return null;
 
@@ -562,10 +564,7 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
                 try
                 {
-                    using (var encoded = resultBmp.Encode(SKEncodedImageFormat.Jpeg, 100))
-                    {
-                        result = encoded.ToArray();
-                    }
+                    result = EncodeJ2C(resultBmp);
                 }
                 catch (Exception e)
                 {
@@ -578,8 +577,8 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
                 return result;
             }
 
-            // Decode back image using SkiaSharp
-            SKBitmap image2 = SKBitmap.Decode(backImage);
+            // Decode back image (SkiaSharp first, J2C fallback - the existing face asset is J2C)
+            SKBitmap image2 = DecodeImage(backImage);
             if (image2 == null)
             {
                 image1.Dispose();
@@ -595,10 +594,7 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
                 try
                 {
-                    using (var encoded = joint.Encode(SKEncodedImageFormat.Jpeg, 100))
-                    {
-                        result = encoded.ToArray();
-                    }
+                    result = EncodeJ2C(joint);
                 }
                 catch (Exception e)
                 {
@@ -608,6 +604,72 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
                 }
 
                 return result;
+            }
+        }
+
+        /// <summary>
+        /// Decode a stored texture to an SKBitmap. SkiaSharp has no JPEG2000 decoder, and both the
+        /// freshly rendered dynamic texture and an existing prim-face asset are J2C codestreams, so
+        /// SKBitmap.Decode returns null for them. Fall back to CoreJ2K, normalising through a PNG
+        /// round-trip because As&lt;SKBitmap&gt;() on this CoreJ2K/SkiaSharp pairing does not hand
+        /// back a directly usable pixel buffer (it renders grey otherwise).
+        /// </summary>
+        private SKBitmap DecodeImage(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+                return null;
+
+            SKBitmap bmp = SKBitmap.Decode(data);
+            if (bmp != null)
+                return bmp;
+
+            try
+            {
+                SKBitmap raw = J2kImage.FromBytes(data)?.As<SKBitmap>();
+                if (raw == null)
+                    return null;
+                using (raw)
+                using (SKData png = raw.Encode(SKEncodedImageFormat.Png, 100))
+                {
+                    if (png == null)
+                        return null;
+                    return SKBitmap.Decode(png.ToArray());
+                }
+            }
+            catch (Exception e)
+            {
+                m_log.LogError(
+                    "[DYNAMICTEXTUREMODULE]: J2C decode failed. Exception {0}{1}",
+                    e.Message, e.StackTrace);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Encode a blended bitmap as a RAW J2C codestream (WithFileFormat(false)) - the only
+        /// texture format a viewer renders on a prim face. Same codec settings the front render
+        /// (VectorRenderModule) and the server-side bake use; replaces the old JPEG encode that a
+        /// viewer could not render as a face texture.
+        /// </summary>
+        private byte[] EncodeJ2C(SKBitmap bmp)
+        {
+            if (bmp == null)
+                return Array.Empty<byte>();
+            try
+            {
+                var cfg = new J2KEncoderConfiguration()
+                    .WithTiles(t => t.SetSize(bmp.Width, bmp.Height))
+                    .WithWavelet(w => w.UseIrreversible97().WithDecompositionLevels(5))
+                    .WithProgression(p => p.WithOrder(ProgressionOrder.LRCP).WithQualityLayers(0.1f, 0.5f, 1.0f))
+                    .WithFileFormat(false);
+                return J2kImage.ToBytes(bmp, cfg);
+            }
+            catch (Exception e)
+            {
+                m_log.LogError(
+                    "[DYNAMICTEXTUREMODULE]: J2C encode failed. Exception {0}{1}",
+                    e.Message, e.StackTrace);
+                return Array.Empty<byte>();
             }
         }
 
