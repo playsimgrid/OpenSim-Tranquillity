@@ -537,6 +537,13 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         {
             try
             {
+                // On a login the circuit appearance comes from the login service, whose wearable table may cap
+                // a type (upstream's AvatarWearable.Add does at five), so the login bake takes its worn set from
+                // the Current Outfit folder, exactly as the UpdateAvatarAppearance handshake does. A teleport
+                // arrival carries the set from a region that already derived it and is not read.
+                if ((sp.TeleportFlags & Constants.TeleportFlags.ViaLogin) != 0)
+                    ApplyCofToWearables(scene, sp);
+
                 BakeAsync(sp, BakeReason.Login, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception ex)
