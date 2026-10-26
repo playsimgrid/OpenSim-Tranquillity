@@ -143,11 +143,16 @@ public class AgentPostHandler : SimpleStreamHandler
 
         bool result = CreateAgent(source, gatekeeper, destination, aCircuit, data.flags, data.fromLogin, ctx, out string reason);
 
-        OSDMap resp = new OSDMap(3);
+        OSDMap resp = new OSDMap(4);
         resp["reason"] = OSD.FromString(reason);
         resp["success"] = OSD.FromBoolean(result);
         // Let's also send out the IP address of the caller back to the caller (HG 1.5)
         resp["your_ip"] = remoteAddress;
+        // HG TRAVEL TOKEN: the home grid rotates ServiceSessionID on every authorised hop.
+        // Hand the rotated value back so the calling region can store it on the live circuit;
+        // without it that region presents a stale token on the NEXT hop and is refused.
+        if (result && !string.IsNullOrEmpty(aCircuit.ServiceSessionID))
+            resp["service_session_id"] = OSD.FromString(aCircuit.ServiceSessionID);
 
         response.StatusCode = (int)HttpStatusCode.OK;
         response.RawBuffer = OSDParser.SerializeJsonToBytes(resp);
@@ -264,6 +269,17 @@ public class AgentSimpleHandler : SimpleStreamHandler
             }
             case "POST":
             {
+                // SECURITY: control-plane endpoint. Only this grid's own servers call it.
+                // 404 rather than 403 so the endpoint does not confirm itself to a scanner, and
+                // the script-marker check stops a script on one of OUR regions relaying past the
+                // address allowlist. Gate is off unless configured - see ControlPlaneGate.
+                if (ControlPlaneGate.HasInWorldScriptMarker(httpRequest.Headers) ||
+                        !ControlPlaneGate.Allow(httpRequest.RemoteIPEndPoint, "agent-create"))
+                {
+                    httpResponse.StatusCode = (int)HttpStatusCode.NotFound;
+                    return;
+                }
+
                 if (agentID.IsZero())
                 {
                     httpResponse.StatusCode = (int)HttpStatusCode.BadRequest;

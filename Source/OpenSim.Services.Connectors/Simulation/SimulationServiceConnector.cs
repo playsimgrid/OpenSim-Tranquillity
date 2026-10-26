@@ -92,6 +92,28 @@ public class SimulationServiceConnector : ISimulationService
         args["teleport_flags"] = OSD.FromString(flags.ToString());
     }
 
+    /// <summary>
+    /// Carry a rotated hypergrid travel token back onto the circuit we just sent.
+    /// </summary>
+    /// <remarks>
+    /// The traveller's home grid authorises each hypergrid hop against ServiceSessionID and
+    /// issues a NEW one for the next hop. It comes back in the response as service_session_id.
+    /// If we drop it, the next hop presents the old token and the home grid refuses the hop
+    /// (RefuseWrongToken) - which is what breaks the trip home and any onward hypergrid jump.
+    /// </remarks>
+    protected static void ApplyCreateAgentResponse(OSDMap data, AgentCircuitData aCircuit, bool success)
+    {
+        if (!success || data is null || aCircuit is null)
+            return;
+
+        if (data.TryGetValue("service_session_id", out OSD rotated))
+        {
+            string token = rotated.AsString();
+            if (!string.IsNullOrEmpty(token))
+                aCircuit.ServiceSessionID = token;
+        }
+    }
+
     public bool CreateAgent(GridRegion source, GridRegion destination, AgentCircuitData aCircuit, uint flags, EntityTransferContext ctx, out string reason)
     {
         reason = String.Empty;
@@ -122,6 +144,7 @@ public class SimulationServiceConnector : ISimulationService
                 OSDMap data = (OSDMap)tmpOSD;
                 reason = data["reason"].AsString();
                 success = data["success"].AsBoolean();
+                ApplyCreateAgentResponse(data, aCircuit, success);
                 return success;
             }
 
@@ -136,6 +159,7 @@ public class SimulationServiceConnector : ISimulationService
                     OSDMap data = (OSDMap)tmpOSD;
                     reason = data["reason"].AsString();
                     success = data["success"].AsBoolean();
+                    ApplyCreateAgentResponse(data, aCircuit, success);
 
                     m_log.WarnFormat(
                         "[REMOTE SIMULATION CONNECTOR]: Remote simulator {0} did not accept compressed transfer, suggest updating that simulator.", destination.RegionName);

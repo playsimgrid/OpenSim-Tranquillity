@@ -130,6 +130,21 @@ public class HGGroupsServicePostHandler : BaseStreamHandler
             request.Remove("METHOD");
 
             m_log.DebugFormat("[Groups.RobustHGConnector]: {0}", method);
+
+            // SECURITY: the two WRITE methods (group create, notice injection) validate no
+            // token - upstream's origin-verification handshake ships commented out - so a
+            // caller reaching the public port could inject a group notice into any proxied
+            // group or create groups at will. We do not accept externally originated group
+            // writes, so gate exactly those two to our own servers. The read and
+            // per-membership-token methods validate their own token and stay open, so
+            // cross-grid group reads keep working. Subject to the gate's off/observe/enforce
+            // ladder like the rest.
+            if ((method == "POSTGROUP" || method == "ADDNOTICE") &&
+                    !ControlPlaneGate.Allow(httpRequest.RemoteIPEndPoint, "groups-" + method))
+            {
+                return FailureResult();
+            }
+
             switch (method)
             {
                 case "POSTGROUP":

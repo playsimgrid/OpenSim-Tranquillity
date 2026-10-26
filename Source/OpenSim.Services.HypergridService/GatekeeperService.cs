@@ -312,6 +312,22 @@ public class GatekeeperService : IGatekeeperService
     }
 
     #region Login Agent
+    /// <summary>
+    /// True when a traveller-supplied HomeURI names THIS grid (or names nothing, which a
+    /// local arrival does). Host names disagree about capitalisation and trailing slashes
+    /// across a hypergrid hop, so compare case-insensitively and slash-insensitively.
+    /// </summary>
+    private static bool IsThisGridHome(string authURL)
+    {
+        if (string.IsNullOrEmpty(authURL))
+            return true;
+
+        if (string.IsNullOrEmpty(m_gatekeeperURL))
+            return false;
+
+        return authURL.TrimEnd('/').Equals(m_gatekeeperURL.TrimEnd('/'), StringComparison.InvariantCultureIgnoreCase);
+    }
+
     public bool LoginAgent(GridRegion source, AgentCircuitData aCircuit, GridRegion destination, out string reason)
     {
         reason = string.Empty;
@@ -406,7 +422,9 @@ public class GatekeeperService : IGatekeeperService
                 // Make sure this is the user coming home, and not a foreign user with same UUID as a local user
                 if (m_UserAgentService is not null)
                 {
-                    if (!m_UserAgentService.IsAgentComingHome(aCircuit.SessionID, m_gatekeeperURL))
+                    if (!(m_UserAgentService is UserAgentService localHomeService
+                            ? localHomeService.IsAgentComingHome(aCircuit.SessionID, aCircuit.AgentID, m_gatekeeperURL)
+                            : m_UserAgentService.IsAgentComingHome(aCircuit.SessionID, m_gatekeeperURL)))
                     {
                         // Can't do, sorry
                         reason = "Unauthorized";
@@ -470,6 +488,30 @@ public class GatekeeperService : IGatekeeperService
                 {
                     if (guinfo.Online && !guinfo.LastRegionID.IsZero())
                     {
+                        // SECURITY: only displace an existing session for the SAME identity.
+                        //
+                        // For a local account uui is the bare AgentID (see above), so the lookup
+                        // finds that local user's session whatever HomeURI the caller claimed -
+                        // and the caller controls BOTH the claimed HomeURI and the callback this
+                        // service uses to "verify" it. A foreign arrival presenting a local
+                        // user's public UUID could therefore god-kill that user's real session.
+                        //
+                        // So when the UUID belongs to a local account, the arrival must claim
+                        // this grid as its home. If it claims somewhere else, refuse the login
+                        // and leave the existing session alone. This is the same "foreign user
+                        // with the same UUID as a local user" case the checks above guard, just
+                        // applied before the kill instead of after it.
+                        if (account is not null && !IsThisGridHome(authURL))
+                        {
+                            m_log.WarnFormat(
+                                "[GATEKEEPER SERVICE]: Refusing arrival for local account {0} claiming home {1}; not killing the existing session",
+                                agentID, string.IsNullOrEmpty(authURL) ? "(none)" : authURL);
+                            reason = "You appear to be already logged in on the destination grid " +
+                                    "Please wait a a minute or two and retry. " +
+                                    "If this takes longer than a few minutes please contact the grid owner.";
+                            return false;
+                        }
+
                         if (SendAgentGodKillToRegion(UUID.Zero, agentID, uui, guinfo))
                         {
                             if (account is not null)
@@ -615,10 +657,22 @@ public class GatekeeperService : IGatekeeperService
 
         if (m_gatekeeperHost.Equals(userHomeHost))
         {
-            return m_UserAgentService.VerifyAgent(aCircuit.SessionID, aCircuit.ServiceSessionID);
+            return m_UserAgentService is UserAgentService localVerifyService
+                ? localVerifyService.VerifyAgent(aCircuit.SessionID, aCircuit.AgentID, aCircuit.ServiceSessionID)
+                : m_UserAgentService.VerifyAgent(aCircuit.SessionID, aCircuit.ServiceSessionID);
         }
         else
         {
+            // SECURITY (SSRF): userURL came from the arriving circuit, i.e. from the caller,
+            // and this callback runs BEFORE the ban and foreign-agent checks. Refuse internal
+            // targets before making the request.
+            if (!HypergridEgressFilter.IsAllowedTarget(userURL, out string egressReason))
+            {
+                m_log.WarnFormat("[GATEKEEPER SERVICE]: Refusing agent verification callback to {0}: {1}",
+                        userURL, egressReason);
+                return false;
+            }
+
             IUserAgentService userAgentService = new UserAgentServiceConnector(userURL);
 
             try
