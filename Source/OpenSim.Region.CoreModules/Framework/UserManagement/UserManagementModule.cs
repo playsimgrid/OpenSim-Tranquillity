@@ -1082,6 +1082,10 @@ public class UserManagementModule : ISharedRegionModule, IUserManagement, IPeopl
         user.IsUnknownUser = false;
         user.HasGridUserTried = true;
         user.IsLocal = local;
+        // The account we were handed already carries the display name; dropping it here
+        // is why a freshly-cached resident shows as "First Last" until the entry expires.
+        user.DisplayName = account.DisplayName;
+        user.NameChanged = Utils.UnixTimeToDateTime(account.NameChanged);
         m_userCacheByID.Add(id, user, local ? LOCALEXPIRE : HGEXPIRE);
     }
 
@@ -1148,7 +1152,7 @@ public class UserManagementModule : ISharedRegionModule, IUserManagement, IPeopl
                 oldUser.LastName = last;
                 oldUser.IsLocal = true;
                 oldUser.HomeURL = string.Empty;
-                oldUser.HasGridUserTried = true;
+                oldUser.HasGridUserTried = false;   // untried: let the first lookup fetch DisplayName
                 m_userCacheByID.Add(uuid, oldUser, LOCALEXPIRE);
             }
             else
@@ -1221,7 +1225,7 @@ public class UserManagementModule : ISharedRegionModule, IUserManagement, IPeopl
                 oldUser.LastName = lastname;
                 oldUser.IsLocal = true;
                 oldUser.HomeURL = string.Empty;
-                oldUser.HasGridUserTried = true;
+                oldUser.HasGridUserTried = false;   // untried: let the first lookup fetch DisplayName
             }
             else
             {
@@ -1239,7 +1243,7 @@ public class UserManagementModule : ISharedRegionModule, IUserManagement, IPeopl
                 oldUser.LastName = lastname;
                 oldUser.IsLocal = true;
                 oldUser.HomeURL = string.Empty;
-                oldUser.HasGridUserTried = true;
+                oldUser.HasGridUserTried = false;   // untried: let the first lookup fetch DisplayName
             }
             else
             {
