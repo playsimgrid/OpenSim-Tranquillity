@@ -26,6 +26,8 @@
  */
 
 using SkiaSharp;
+using CoreJ2K;
+using CoreJ2K.Configuration;
 using Nini.Config;
 using OpenMetaverse;
 using OpenSim.Framework;
@@ -547,10 +549,83 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
             return asset.FullID;
         }
 
+        /// <summary>
+        /// Decode an image that may be PNG/JPEG (SkiaSharp) or a raw J2C codestream (CoreJ2K).
+        /// </summary>
+        /// <remarks>
+        /// SKBitmap.Decode THROWS ArgumentNullException('codec') when nothing can decode the
+        /// payload - it does not return null - so the "if (image == null)" guards below were
+        /// dead code and a script calling osSetDynamicTextureDataBlendFace died outright
+        /// ("Script must be Reset to re-enable") instead of losing one texture. The front
+        /// layer always arrives as raw J2C from VectorRender and SkiaSharp has no J2K codec,
+        /// so that was every blended board.
+        /// </remarks>
+        private static SKBitmap DecodeImage(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+                return null;
+
+            try
+            {
+                SKBitmap bmp = SKBitmap.Decode(data);
+                if (bmp != null)
+                    return bmp;
+            }
+            catch (Exception)
+            {
+                // No SkiaSharp codec for this payload - almost always J2C. Try CoreJ2K.
+            }
+
+            try
+            {
+                SKBitmap raw = J2kImage.FromBytes(data)?.As<SKBitmap>();
+                if (raw == null)
+                    return null;
+
+                // CoreJ2K's As<SKBitmap>() returns a bitmap whose pixels are NOT readable
+                // through the normal SKBitmap APIs: .Pixels/GetPixel and SKCanvas.DrawBitmap
+                // all see it as empty, so it composites to nothing and the blend result is
+                // just the background - even though Encode() reads it fine. Round-trip it
+                // through PNG to get a standard, pixel-accessible bitmap.
+                using (raw)
+                using (SKData enc = raw.Encode(SKEncodedImageFormat.Png, 100))
+                {
+                    if (enc == null)
+                        return null;
+                    return SKBitmap.Decode(enc.ToArray());
+                }
+            }
+            catch (Exception e)
+            {
+                m_log.ErrorFormat(
+                    "[DYNAMICTEXTUREMODULE]: could not decode {0} bytes as PNG/JPEG or J2C. Exception {1}{2}",
+                    data.Length, e.Message, e.StackTrace);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Encode a blended bitmap as a RAW single-tile J2C codestream - the only thing an SL
+        /// viewer will render on a prim face. Mirrors VectorRenderModule.BuildEncoderConfig.
+        /// </summary>
+        /// <remarks>
+        /// The previous code emitted JPEG via SKBitmap.Encode. That is not J2C, so even a
+        /// blend that succeeded arrived as a blank face with no error at any layer.
+        /// </remarks>
+        private static byte[] EncodeJ2C(SKBitmap bmp)
+        {
+            J2KEncoderConfiguration cfg = new J2KEncoderConfiguration()
+                .WithFileFormat(false)
+                .WithTiles(t => t.SetSize(bmp.Width, bmp.Height))
+                .WithWavelet(w => w.UseIrreversible97().WithDecompositionLevels(5))
+                .WithProgression(p => p.WithOrder(ProgressionOrder.LRCP).WithQualityLayers(0.1f, 0.5f, 1.0f));
+            return J2kImage.ToBytes(bmp, cfg);
+        }
+
         private byte[] BlendTextures(byte[] frontImage, byte[] backImage, byte newAlpha)
         {
-            // Decode front image using SkiaSharp
-            SKBitmap image1 = SKBitmap.Decode(frontImage);
+            // Decode front image (SkiaSharp for PNG/JPEG, CoreJ2K for J2C)
+            SKBitmap image1 = DecodeImage(frontImage);
             if (image1 == null)
                 return null;
 
@@ -561,15 +636,12 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
                 try
                 {
-                    using (var encoded = resultBmp.Encode(SKEncodedImageFormat.Jpeg, 100))
-                    {
-                        result = encoded.ToArray();
-                    }
+                    result = EncodeJ2C(resultBmp);
                 }
                 catch (Exception e)
                 {
                     m_log.ErrorFormat(
-                    "[DYNAMICTEXTUREMODULE]: SkiaSharp Encode Failed.  Exception {0}{1}",
+                    "[DYNAMICTEXTUREMODULE]: J2C Encode Failed.  Exception {0}{1}",
                         e.Message, e.StackTrace);
                 }
                 image1.Dispose();
@@ -577,8 +649,8 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
                 return result;
             }
 
-            // Decode back image using SkiaSharp
-            SKBitmap image2 = SKBitmap.Decode(backImage);
+            // Decode back image (SkiaSharp for PNG/JPEG, CoreJ2K for J2C)
+            SKBitmap image2 = DecodeImage(backImage);
             if (image2 == null)
             {
                 image1.Dispose();
@@ -594,15 +666,12 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
                 try
                 {
-                    using (var encoded = joint.Encode(SKEncodedImageFormat.Jpeg, 100))
-                    {
-                        result = encoded.ToArray();
-                    }
+                    result = EncodeJ2C(joint);
                 }
                 catch (Exception e)
                 {
                     m_log.ErrorFormat(
-                    "[DYNAMICTEXTUREMODULE]: SkiaSharp Encode Failed.  Exception {0}{1}",
+                    "[DYNAMICTEXTUREMODULE]: J2C Encode Failed.  Exception {0}{1}",
                         e.Message, e.StackTrace);
                 }
 
@@ -620,6 +689,10 @@ public class DynamicTextureModule : ISharedRegionModule, IDynamicTextureManager
 
             using (var canvas = new SKCanvas(joint))
             {
+                // Clear first: an uninitialised Premul canvas leaves the untouched area
+                // undefined rather than opaque.
+                canvas.Clear(SKColors.Black);
+
                 // Draw background
                 canvas.DrawBitmap(back, 0, 0);
 
