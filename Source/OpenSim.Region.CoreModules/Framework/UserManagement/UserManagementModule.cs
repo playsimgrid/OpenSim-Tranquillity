@@ -1286,7 +1286,20 @@ public class UserManagementModule : ISharedRegionModule, IUserManagement, IPeopl
         if(u == null)
             AddUser(account);
         else
+        {
+            // Setting HasGridUserTried here makes the early return above authoritative for
+            // every later call, so the account's display name has to be copied across now
+            // or the entry serves the legal name until it leaves the cache. AddCreatorUser
+            // deliberately caches entries untried so that this lookup fills them in.
+            u.FirstName = account.FirstName;
+            u.LastName = account.LastName;
+            u.HomeURL = string.Empty;
+            u.IsLocal = true;
+            u.IsUnknownUser = false;
+            u.DisplayName = account.DisplayName;
+            u.NameChanged = Utils.UnixTimeToDateTime(account.NameChanged);
             u.HasGridUserTried = true;
+        }
         return true;
     }
 
