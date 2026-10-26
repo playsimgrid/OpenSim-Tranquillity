@@ -542,9 +542,25 @@ public class FSAssetConnector : ServiceBase, IAssetService
         }
         catch (Exception exception)
         {
-            m_log.Error(exception.ToString());
-            Thread.Sleep(5000);
-            Environment.Exit(1);
+            // Fail THIS read, not the whole process.
+            //
+            // This used to log, Thread.Sleep(5000) and Environment.Exit(1) - and the
+            // "return null" below it was left unreachable, which is what the method was
+            // written to do before the exit was inserted above it.
+            //
+            // The catch is a catch-all over the entire read path, so a transient
+            // database blip, one unreadable blob or a gzip error killed ROBUST. Under
+            // systemd with Restart=always and RestartUSec=10s that is roughly a 15
+            // second grid-wide outage per occurrence, and a repeated read of the same
+            // bad asset is a crash loop. An asset that cannot be read is a missing
+            // asset; the caller already handles not-found.
+            //
+            // The dhpg fork had replaced this with log-and-continue. DarkHearts only
+            // inherited the exit when its ROBUST moved onto this line on 2026-10-26,
+            // and it had not yet fired.
+            m_log.ErrorFormat(
+                "[FSASSETS]: read of asset {0} failed; answering not-found instead of exiting. {1}",
+                id, exception);
             return null;
         }
     }
