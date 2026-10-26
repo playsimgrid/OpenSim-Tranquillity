@@ -543,9 +543,21 @@ public class FSAssetConnector : ServiceBase, IAssetService
         }
         catch (Exception exception)
         {
-            m_log.LogError(exception.ToString());
-            Thread.Sleep(5000);
-            Environment.Exit(1);
+            // Fail THIS read, not the whole process.
+            //
+            // This used to log, Thread.Sleep(5000) and Environment.Exit(1) - and the
+            // "return null" below was left unreachable, which is what the method was
+            // written to do before the exit was inserted above it.
+            //
+            // The catch is a catch-all over the entire read path, so a transient
+            // database blip, one unreadable blob or a gzip error killed ROBUST. Under
+            // systemd with Restart=always and RestartUSec=10s that is roughly a 15
+            // second grid-wide outage per occurrence, and a repeated read of the same
+            // bad asset is a crash loop. An asset that cannot be read is a missing
+            // asset; every caller already handles not-found.
+            m_log.LogError(
+                "[FSASSETS]: read of asset {Id} failed; answering not-found instead of exiting. {Exception}",
+                id, exception);
             return null;
         }
     }
