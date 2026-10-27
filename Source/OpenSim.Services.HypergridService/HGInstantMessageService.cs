@@ -57,6 +57,18 @@ public class HGInstantMessageService : IInstantMessage
     protected static readonly ExpiringCacheOS<UUID, string> m_UserLocationMap = new ExpiringCacheOS<UUID, string>(10000);
     protected static readonly ExpiringCacheOS<UUID, string> m_RegionsCache = new ExpiringCacheOS<UUID, string>(60000);
 
+    // Successful lookups are cached above; failures were cached nowhere, so every
+    // message to an unlocatable HG user paid the full UserAgentService HTTP timeout
+    // again. A group notice fans out one message per online member, each handled on
+    // its own Robust worker thread, so a group holding several members on an
+    // unreachable grid could hold the whole pool in 10-second waits - which is what
+    // made presence and teleports stall grid-wide while notices were being sent.
+    protected static readonly ExpiringCacheOS<UUID, bool> m_UserLocateFailed = new ExpiringCacheOS<UUID, bool>(10000);
+
+    // Deliberately shorter than the 120s success TTL: a user whose home grid comes
+    // back is worth re-probing sooner than one we have already reached.
+    private const int LOCATE_FAIL_TTL = 60;
+
     private static bool m_ForwardOfflineGroupMessages;
     private static bool m_InGatekeeper;
     private string m_messageKey;
@@ -215,15 +227,30 @@ public class HGInstantMessageService : IInstantMessage
         if (string.IsNullOrEmpty(url) && !foreigner && m_UserAgentService != null)
         {
             // Let's check with the UAS if the user is elsewhere in HG
-            m_log.DebugFormat("[HG IM SERVICE]: User is not present. Checking location with User Agent service");
-            try
+            if (m_UserLocateFailed.ContainsKey(toAgentID))
             {
-                url = m_UserAgentService.LocateUser(toAgentID);
+                // Recent attempt already failed. Returning now costs nothing; calling
+                // again would block this thread for the UAS timeout to learn the same
+                // thing, and that cost is what takes the grid down under a notice fan-out.
+                m_log.DebugFormat(
+                    "[HG IM SERVICE]: Skipping LocateUser for {0}, a recent attempt failed", toAgentID);
             }
-            catch (Exception e)
+            else
             {
-                m_log.Warn("[HG IM SERVICE]: LocateUser call failed ", e);
-                url = string.Empty;
+                m_log.DebugFormat("[HG IM SERVICE]: User is not present. Checking location with User Agent service");
+                try
+                {
+                    url = m_UserAgentService.LocateUser(toAgentID);
+                }
+                catch (Exception e)
+                {
+                    m_log.Warn("[HG IM SERVICE]: LocateUser call failed ", e);
+                    url = string.Empty;
+                }
+
+                // An empty answer is as expensive to obtain as a thrown one, so both count.
+                if (string.IsNullOrEmpty(url))
+                    m_UserLocateFailed.AddOrUpdate(toAgentID, true, LOCATE_FAIL_TTL);
             }
         }
 
@@ -253,6 +280,8 @@ public class HGInstantMessageService : IInstantMessage
         {
             // IM delivery successful, so store the Agent's location in our local cache.
             m_UserLocationMap.AddOrUpdate(toAgentID, url, 120);
+            // Reached them, so drop any standing penalty rather than make them wait it out.
+            m_UserLocateFailed.Remove(toAgentID);
             return true;
         }
         else
