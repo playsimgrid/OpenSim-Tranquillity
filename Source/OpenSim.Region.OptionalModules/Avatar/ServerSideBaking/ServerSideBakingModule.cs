@@ -386,7 +386,14 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         // (llagentwearables.cpp:819-851), so nothing else turns a COF link into a wearable. Without this the save
         // below persists the wearables the sim already had and the bake reuses every channel, which is exactly
         // what was seen in practice: two shirts linked in the COF, one shirt in the Avatars record.
-        ApplyCofToWearables(scene, sp);
+        //
+        // And SAY so: an accepted handshake used to leave no line, so a Firestorm outfit swap that collapsed a
+        // nine-layer type (a canary on 2026-10-16, twice on 2026-10-27) could not be told from one where this read
+        // never ran. The line names what the read found, changed or not.
+        bool cofChanged = ApplyCofToWearables(scene, sp);
+        m_log.LogDebug("[SSB]: {Cap} for {Name}: cof_version {Client} accepted (server {Server}); COF read {Changed}: {Summary}",
+            CapName, sp.Name, clientVersion, serverVersion, cofChanged ? "changed" : "unchanged",
+            DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>()));
 
         // Instead the cap joins the same path the legacy route already takes: queue an appearance save, and let
         // the bake happen when that save completes (OnAvatarAppearanceChanged). Both signals therefore converge
@@ -409,19 +416,20 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
     /// lookup that failed.
     /// </para>
     /// </summary>
-    private static void ApplyCofToWearables(Scene scene, ScenePresence sp)
+    /// <returns>True when the read replaced the presence's wearables; false when it found no change or could not read.</returns>
+    private static bool ApplyCofToWearables(Scene scene, ScenePresence sp)
     {
         var inventory = scene?.InventoryService;
-        if (inventory is null || sp is null) return;
+        if (inventory is null || sp is null) return false;
 
         List<CofWearableLink> links;
         var unresolved = new List<CofUnresolvedLink>();
         try
         {
             var cof = inventory.GetFolderForType(sp.UUID, FolderType.CurrentOutfit);
-            if (cof is null) return;
+            if (cof is null) return false;
             var content = inventory.GetFolderContent(sp.UUID, cof.ID);
-            if (content?.Items is null) return;
+            if (content?.Items is null) return false;
 
             links = new List<CofWearableLink>(content.Items.Count);
             foreach (var link in content.Items)
@@ -441,14 +449,15 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         catch (Exception ex)
         {
             m_log.LogWarning(ex, "[SSB]: could not read the COF for {Name}; the wearables are left as they are", sp.Name);
-            return;
+            return false;
         }
 
         var derived = CofWearables.Derive(sp.Appearance?.Wearables, links, unresolved, out var changed);
-        if (!changed) return;
+        if (!changed) return false;
 
         sp.Appearance.Wearables = derived;
         m_log.LogDebug("[SSB]: {Name}'s worn set from the COF: {Summary}", sp.Name, DescribeWearables(derived));
+        return true;
     }
 
     /// <summary>"Shirt x2, Pants" — the worn types and how many of each, for the log.</summary>
