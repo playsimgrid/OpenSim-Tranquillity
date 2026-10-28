@@ -246,5 +246,25 @@ public class ChangeTriggerTests
         var removeRegion = factory.IndexOf("public void RemoveRegion(Scene scene)", StringComparison.Ordinal);
         var factorySubscribe = factory.IndexOf("scene.EventManager.OnNewClient += SubscribeToClientEvents;", StringComparison.Ordinal);
         Assert.True(addRegion > 0 && factorySubscribe > addRegion && factorySubscribe < removeRegion, "the factory subscribes OnNewClient in AddRegion");
+
+        // the bake gate (BakeGateTests): in BakeAsync the agent's gate is taken from the region and waited on before
+        // the appearance is read and before the orchestrator runs, and it is released in a finally that closes the
+        // method, so a throw anywhere in the bake still releases it...
+        var bakeAsync = module.IndexOf("public async Task<BakeOutcome> BakeAsync(ScenePresence sp, BakeReason reason, CancellationToken ct)", StringComparison.Ordinal);
+        var bakeAsyncEnd = module.IndexOf("private static string Summarise(BakeOutcome o)", bakeAsync, StringComparison.Ordinal);
+        var gateGet = module.IndexOf("var gate = RegionOf(sp.Scene)?.BakeGate(sp.UUID);", bakeAsync, StringComparison.Ordinal);
+        var wait = module.IndexOf("await gate.WaitAsync(ct).ConfigureAwait(false);", bakeAsync, StringComparison.Ordinal);
+        var appearanceRead = module.IndexOf("var appearance = sp.Appearance;", bakeAsync, StringComparison.Ordinal);
+        var run = module.IndexOf("BakeOrchestrator.Run(sp.UUID, reason,", bakeAsync, StringComparison.Ordinal);
+        var release = module.IndexOf("finally\n        {\n            gate?.Release();\n        }\n    }\n", bakeAsync, StringComparison.Ordinal);
+        Assert.True(bakeAsync > 0 && bakeAsyncEnd > bakeAsync, "BakeAsync and the method after it must both be present");
+        Assert.True(gateGet > bakeAsync && wait > gateGet && appearanceRead > wait && run > appearanceRead, "BakeAsync waits on the agent's gate before it reads the appearance and before the orchestrator runs");
+        Assert.True(release > run && release < bakeAsyncEnd, "the gate is released in a finally that closes BakeAsync");
+        // ...the wait is logged with the one Debug line the package is checked for...
+        Assert.Contains("[SSB]: bake for {Name} reason={Reason} waited {Ms} ms for the agent's running bake", module);
+        // ...and the region state drops the gate with the rest of the agent, without disposing it
+        var forgetGate = region.IndexOf("m_bakeGate.TryRemove(agentId, out _);", forget, StringComparison.Ordinal);
+        Assert.True(forgetGate > forget, "Forget drops the bake gate");
+        Assert.DoesNotContain("Dispose", region);
     }
 }
