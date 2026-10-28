@@ -907,11 +907,15 @@ public class ODEAssetRequest
                 m_worker.AssetLoaded(repData);
             }
             else
-                m_log.WarnFormat("[PHYSICS]: asset provider returned invalid mesh data for prim {0} asset UUID {1}.",
-                    repData.actor.Name, asset.ID.ToString());
+                m_log.WarnFormat("[PHYSICS]: asset provider returned invalid mesh data for prim {0} asset UUID {1} ({2} bytes).",
+                    repData.actor.Name, asset.ID.ToString(),
+                    asset.Data is null ? "null" : asset.Data.Length.ToString());
         }
         else
-            m_log.WarnFormat("[PHYSICS]: asset provider returned null asset for mesh of prim {0}.",
-                repData.actor.Name);
+            // Naming the asset is the whole value of this line. Without it the only way to
+            // get from 4169 of these to the 2734 absent assets behind them is to pull every
+            // prim on the region and decode ExtraParams by hand.
+            m_log.WarnFormat("[PHYSICS]: asset provider returned null asset {0} for mesh of prim {1} - asset does not exist in the asset service.",
+                repData.assetID?.ToString() ?? "<unset>", repData.actor.Name);
     }
 }

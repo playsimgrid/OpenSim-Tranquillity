@@ -653,9 +653,16 @@ public class Meshmerizer : IMesher, INonSharedRegionModule
         {
             if (primShape.SculptData == null || primShape.SculptData.Length == 0)
             {
-                m_log.WarnFormat(
-                    "[PHYSICS]: No sculpt data for prim {0}, texture {1} - no physics proxy. The asset is missing or zero length.",
-                    primName, primShape.SculptTexture);
+                // NOT a fault - see the same guard in ubODEMeshmerizer. BSShape.VerifyMeshCreated
+                // builds a filler shape first and only then fetches the sculpt asset, so this
+                // branch is the normal first pass for an uncached sculpt prim. Warning here
+                // reports a missing asset for prims whose asset is present and fine.
+                if (m_log.IsDebugEnabled)
+                {
+                    m_log.DebugFormat(
+                        "[PHYSICS]: No sculpt data yet for prim {0}, texture {1} - asset fetch pending.",
+                        primName, primShape.SculptTexture);
+                }
                 return false;
             }
 

@@ -707,14 +707,20 @@ public class ubODEMeshmerizer : IMesher, INonSharedRegionModule
 
         if (primShape.SculptData == null || primShape.SculptData.Length == 0)
         {
-            // This used to return silently, so an EMPTY sculpt asset - the thing an
-            // asset store serves after a failed store - produced no log line at all
-            // and the prim simply had no physics. The two causes need separate
-            // messages: nothing arrived, versus something arrived and would not
-            // decode. Only the first one points at the asset service.
-            m_log.WarnFormat(
-                "[PHYSICS]: No sculpt data for prim {0}, texture {1} - no physics proxy. The asset is missing or zero length.",
-                primName, primShape.SculptTexture);
+            // NOT a fault, and nothing here may be logged above Debug. ODEMeshWorker.GetMesh
+            // calls CreateMesh with the sculpt data deliberately empty, as a probe of the mesh
+            // caches: a null return is how it learns it has to go and fetch the asset
+            // (MeshState.needAsset). So this branch is the normal first pass for every sculpt
+            // prim whose mesh is not already cached, and a warning here fires once per such
+            // prim on a cold cache - 121 of them on this grid, every asset present and intact.
+            // The genuine conditions are detected after the fetch, in
+            // ODEAssetRequest.ODEassetReceived, which is where they are reported.
+            if (m_log.IsDebugEnabled)
+            {
+                m_log.DebugFormat(
+                    "[PHYSICS]: No sculpt data yet for prim {0}, texture {1} - asset fetch pending.",
+                    primName, primShape.SculptTexture);
+            }
             return false;
         }
 
