@@ -53,6 +53,7 @@ public sealed class ServerSideBakingRegion : IServerSideBakingRegion
         m_bakedCof.TryRemove(agentId, out _);
         Handshake.Clear(agentId);
         m_lastChangeBake.TryRemove(agentId, out _);
+        m_legacyWear.TryRemove(agentId, out _);
         m_lastGoodBodyParts.TryRemove(agentId, out _);
     }
 
@@ -153,6 +154,32 @@ public sealed class ServerSideBakingRegion : IServerSideBakingRegion
             });
         return claimed;
     }
+
+    // ------------------------------------------------------------------ the legacy wear note
+
+    private readonly ConcurrentDictionary<UUID, bool> m_legacyWear = new();
+
+    /// <summary>
+    /// Note that a legacy <c>AgentIsNowWearing</c> packet arrived for this agent, so that the change bake which
+    /// follows re-reads the Current Outfit folder before it composites (<see cref="TakeLegacyWear"/>). The packet
+    /// carries one item or a null id per type and its merge can clear or shrink a type the folder still holds
+    /// several items of; the folder is the authority for clothing on a region that bakes server-side.
+    ///
+    /// <para>A flag-off region notes nothing: the module does not subscribe the packet there, and this guard keeps
+    /// a stray subscription inert, as <see cref="TryClaimChangeBake"/> does for the change trigger (ADR-001).</para>
+    /// </summary>
+    public void NoteLegacyWear(UUID agentId)
+    {
+        if (!ServerSideBakingEnabled) return;
+        m_legacyWear[agentId] = true;
+    }
+
+    /// <summary>
+    /// Take the note: true once after a <see cref="NoteLegacyWear"/>, false until the next one. Atomic, so two
+    /// change bakes landing together read the folder once between them, and a packet that arrives during a bake
+    /// is taken by the next.
+    /// </summary>
+    public bool TakeLegacyWear(UUID agentId) => m_legacyWear.TryRemove(agentId, out _);
 
     /// <summary>
     /// Whether the flag is on for one region. The simulator-wide <c>[Appearance] ServerSideBaking</c> is the

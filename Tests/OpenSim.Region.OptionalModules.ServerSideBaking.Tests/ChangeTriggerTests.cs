@@ -211,5 +211,40 @@ public class ChangeTriggerTests
         // the cap route joins the same path instead of baking on arrival
         Assert.Contains("scene.AvatarFactory?.QueueAppearanceSave(agentID);", module);
         Assert.DoesNotContain("BakeAsync(sp, BakeReason.Cap,", module);
+
+        // the legacy wear note (LegacyWearNoteTests): the packet is subscribed only inside the flag-on block...
+        var enabledBlock = module.IndexOf("if (enabled)\n        {", StringComparison.Ordinal);
+        var enabledElse = module.IndexOf("else\n        {\n            m_log.LogInformation(\"[SSB]: region {Region} has server-side baking off", enabledBlock, StringComparison.Ordinal);
+        var subscribe = module.IndexOf("scene.EventManager.OnNewClient += SubscribeLegacyWear;", StringComparison.Ordinal);
+        Assert.True(enabledBlock > 0 && enabledElse > enabledBlock, "the flag-on block and its else must both be present");
+        Assert.True(subscribe > enabledBlock && subscribe < enabledElse, "the legacy wear packet is subscribed only on a flag-on region");
+        Assert.Contains("scene.EventManager.OnNewClient -= SubscribeLegacyWear;", module);
+        Assert.Contains("client.OnAvatarNowWearing += OnAvatarNowWearing;", module);
+        // ...the handler only notes the agent...
+        Assert.Contains("RegionOf(scene)?.NoteLegacyWear(client.AgentId);", module);
+        // ...and the note is taken inside the change-bake work item, before the bake, where the folder is re-read
+        // and a save is queued when the read changed the table
+        var changeBake = module.IndexOf("private void OnAvatarAppearanceChanged(ScenePresence sp)", StringComparison.Ordinal);
+        var take = module.IndexOf("if (region.TakeLegacyWear(sp.UUID))", changeBake, StringComparison.Ordinal);
+        var bake = module.IndexOf("BakeAsync(sp, BakeReason.CofChanged, CancellationToken.None)", changeBake, StringComparison.Ordinal);
+        Assert.True(changeBake > 0 && take > changeBake && bake > take, "the note is taken in the change-bake work item, before BakeAsync");
+        Assert.Contains("RederiveAfterLegacyWear(scene, sp);", module);
+        var rederive = module.IndexOf("private void RederiveAfterLegacyWear(Scene scene, ScenePresence sp)", StringComparison.Ordinal);
+        var read = module.IndexOf("bool changed = ApplyCofToWearables(scene, sp);", rederive, StringComparison.Ordinal);
+        var save = module.IndexOf("if (changed) scene.AvatarFactory?.QueueAppearanceSave(sp.UUID);", rederive, StringComparison.Ordinal);
+        Assert.True(rederive > 0 && read > rederive && save > read, "the re-derive reads the folder with ApplyCofToWearables and queues a save when it changed the table");
+        // the region state forgets the note with the rest of the agent
+        var region = Read("Source", "OpenSim.Region.OptionalModules", "Avatar", "ServerSideBaking", "ServerSideBakingRegion.cs");
+        var forget = region.IndexOf("public void Forget(UUID agentId)", StringComparison.Ordinal);
+        var forgetNote = region.IndexOf("m_legacyWear.TryRemove(agentId, out _);", forget, StringComparison.Ordinal);
+        Assert.True(forget > 0 && forgetNote > forget, "Forget clears the legacy wear note");
+        // the factory still merges the packet and subscribes it from AddRegion, so on every client its merge is
+        // registered, and runs, before this module's note (RegionLoaded runs after every AddRegion); the
+        // re-derive does not depend on that order, but it is the order
+        Assert.Contains("client.OnAvatarNowWearing += Client_OnAvatarNowWearing;", factory);
+        var addRegion = factory.IndexOf("public void AddRegion(Scene scene)", StringComparison.Ordinal);
+        var removeRegion = factory.IndexOf("public void RemoveRegion(Scene scene)", StringComparison.Ordinal);
+        var factorySubscribe = factory.IndexOf("scene.EventManager.OnNewClient += SubscribeToClientEvents;", StringComparison.Ordinal);
+        Assert.True(addRegion > 0 && factorySubscribe > addRegion && factorySubscribe < removeRegion, "the factory subscribes OnNewClient in AddRegion");
     }
 }

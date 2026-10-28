@@ -105,6 +105,7 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         scene.EventManager.OnMakeRootAgent -= OnMakeRootAgent;
         scene.EventManager.OnRemovePresence -= region.Forget;
         scene.EventManager.OnAvatarAppearanceChange -= OnAvatarAppearanceChanged;
+        scene.EventManager.OnNewClient -= SubscribeLegacyWear;
     }
 
     /// <summary>This region's state, or null on a region the module has not finished loading.</summary>
@@ -141,6 +142,23 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
             scene.EventManager.OnMakeRootAgent += OnMakeRootAgent;
             scene.EventManager.OnRemovePresence += region.Forget;
             scene.EventManager.OnAvatarAppearanceChange += OnAvatarAppearanceChanged;
+
+            // The legacy AgentIsNowWearing packet. Firestorm's [Legacy Bake] code sends it at login and on every
+            // wear, remove and outfit change, one WearableData block per wearable type holding the type's first
+            // item, or a null id when the viewer wears nothing of that type: a packet sent while a type is empty
+            // clears it, and a packet sent while a type holds nine layers names one. The factory merges it into
+            // the wearable table (AvatarFactoryModule.Client_OnAvatarNowWearing), and on a region that bakes
+            // server-side that merge can undo what the Current Outfit folder says. A canary swap on 2026-10-16
+            // and two reproductions on 2026-10-27 by the grid's design owner left a nine-layer Universal type at
+            // one item; the 2026-10-28 trace showed how: the UpdateAvatarAppearance handshake read the folder and
+            // derived nine, then three packets arrived 510 ms later within one millisecond, taking the type to
+            // nine, to zero and back to one, and nothing read the folder again before the bake.
+            //
+            // The handler only notes the agent on the region state. The change bake that the packet's own
+            // appearance save causes re-reads the folder first (OnAvatarAppearanceChanged), so the read lands
+            // after the factory's merge whatever the order of the two handlers on the client event, and only for
+            // the events that send the packet.
+            scene.EventManager.OnNewClient += SubscribeLegacyWear;
             m_log.LogInformation(
                 "[SSB]: region {Region} has server-side baking ON: RegionProtocols bit 0 set, {Cap} advertised, "
                 + "login bake armed, appearances carry AppearanceData. Firestorm there will stop client-baking.",
@@ -518,6 +536,13 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         {
             try
             {
+                // A legacy AgentIsNowWearing packet arrived since the last change bake (the subscription in
+                // RegionLoaded): its merge, which this save has just persisted, may have cleared or shrunk a type
+                // the Current Outfit folder still holds several items of. Read the folder again, after that merge
+                // and before the bake.
+                if (region.TakeLegacyWear(sp.UUID))
+                    RederiveAfterLegacyWear(scene, sp);
+
                 // BakeAsync sends the appearance itself when anything is live, reused included, so a change whose
                 // hashes all match still reaches the viewer — which it must, because the viewer is waiting for an
                 // AvatarAppearance it can accept and will not re-request one.
@@ -528,6 +553,47 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
                 m_log.LogError(ex, "[SSB]: change bake for {Name} threw", sp.Name);
             }
         }, null, "SSB change bake");
+    }
+
+    private void SubscribeLegacyWear(IClientAPI client)
+    {
+        if (client is not null) client.OnAvatarNowWearing += OnAvatarNowWearing;
+    }
+
+    /// <summary>The legacy packet's handler: note the agent, nothing more. The folder is read before the change bake.</summary>
+    private void OnAvatarNowWearing(IClientAPI client, AvatarWearingArgs e)
+    {
+        if (client?.Scene is not Scene scene) return;
+        RegionOf(scene)?.NoteLegacyWear(client.AgentId);
+    }
+
+    /// <summary>
+    /// The Current Outfit folder, read again before a change bake because a legacy wear packet arrived since the
+    /// last one. The one read this module already has (<see cref="ApplyCofToWearables"/>); with
+    /// <see cref="CofWearables.Derive"/> it is a complete statement of clothing, so a type the folder has no
+    /// link for stays cleared and a type it has nine links for comes back to nine. When the read changed the
+    /// table an appearance save is queued so the avatar record, persisted just before this trigger, catches up;
+    /// that save's own trigger bakes again five seconds on and reuses every channel.
+    ///
+    /// <para>A read that fails leaves the merged table as it is and the bake proceeds from it, as before this
+    /// method existed: <see cref="ApplyCofToWearables"/> warns and returns false on a folder it cannot read, and
+    /// anything else that throws is caught here so the bake is never skipped.</para>
+    /// </summary>
+    private void RederiveAfterLegacyWear(Scene scene, ScenePresence sp)
+    {
+        try
+        {
+            string before = DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>());
+            bool changed = ApplyCofToWearables(scene, sp);
+            m_log.LogDebug("[SSB]: COF re-read for {Name} after a legacy wear packet, before the change bake: {Changed}: {Before} → {After}",
+                sp.Name, changed ? "changed" : "unchanged", before,
+                DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>()));
+            if (changed) scene.AvatarFactory?.QueueAppearanceSave(sp.UUID);
+        }
+        catch (Exception ex)
+        {
+            m_log.LogWarning(ex, "[SSB]: COF re-read for {Name} after a legacy wear packet threw; the change bake proceeds from the merged table", sp.Name);
+        }
     }
 
     /// <summary>
