@@ -779,17 +779,30 @@ public class ubODEMeshmerizer : IMesher, INonSharedRegionModule
     /// </summary>
     /// <remarks>
     /// A sculpt map's geometry is entirely in RGB - the alpha channel carries none of it -
-    /// but every consumer downstream treats alpha as coverage and throws the colour away
-    /// where it is low. SKImage.Encode (the sculpt map cache), SKCanvas.DrawBitmap (the
-    /// scaler) and SKBitmap.SetPixel all hand back 0,0,0 for a pixel whose alpha is 0.
-    /// Measured on 11 real sculpt maps that carry alpha: the PNG cache round trip took the
-    /// 6 whose alpha is uniformly 0 from 246-3257 distinct vertices down to 1 - every vertex
-    /// at the origin, every triangle degenerate - and the canvas scaler did the same. Two
-    /// more lost geometry in proportion to their alpha (48,584 -> 8 distinct at alpha 1;
-    /// 49,032 -> 17,155 at alpha 0..255). BulletSim then leaves the prim as the solid box it
-    /// installs while waiting for the asset, so a hollow sculpt becomes an invisible wall.
-    /// Reading pixels is safe; only writing and compositing are destructive. So read them
-    /// out and reinstall them opaque. Verified: all 11 keep exactly their decoded vertex
+    /// but Skia treats alpha as coverage, so several things downstream discard the colour
+    /// where alpha is low:
+    ///
+    ///   SKBitmap.Decode of an alpha-bearing PNG, i.e. the sculpt map cache READ. The loss
+    ///     is on load, not on save: read with a non-Skia PNG decoder the encoded file is
+    ///     faithful, carrying all 246-48,584 distinct RGB values, and Skia's own decode of
+    ///     that same file returns 1.
+    ///   SKCanvas.DrawBitmap, the scaler in SculptMap, which composites.
+    ///   SKBitmap.SetPixel and SKBitmap.Copy, which premultiply whatever the declared
+    ///     AlphaType says - Opaque and Unpremul included. Write (200,100,50,0), read it
+    ///     back, get (0,0,0,0).
+    ///
+    /// One distinct RGB means every vertex at the same point and every triangle degenerate,
+    /// and BulletSim then leaves the prim as the solid box it installs while waiting for the
+    /// asset - a hollow sculpt becomes an invisible wall. Measured on 11 real sculpt maps
+    /// that carry alpha: the cache round trip took the 6 whose alpha is uniformly 0 from
+    /// 246-3257 distinct values down to 1, and the canvas scaler did the same; two more lost
+    /// geometry in proportion to their alpha (48,584 -> 8 at alpha 1, 49,032 -> 17,155 at
+    /// alpha 0..255).
+    ///
+    /// Only GetPixel on a freshly decoded bitmap is safe, so read the pixels out and
+    /// reinstall them opaque. A flattened map encodes to a 3-CHANNEL PNG with no alpha
+    /// channel at all, which is what makes the read back faithful - the decoder has nothing
+    /// to premultiply against. Verified: all 11 keep exactly their decoded distinct-value
     /// count through the cache, and the canvas scaler then agrees with the hand scaler
     /// vertex for vertex on all 11.
     /// </remarks>
