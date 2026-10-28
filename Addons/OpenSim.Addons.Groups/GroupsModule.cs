@@ -497,17 +497,53 @@ public class GroupsModule : ISharedRegionModule, IGroupsModule
             {
                 OnNewGroupNotice?.Invoke(GroupID, NoticeID);
 
-                // Send notice out to everyone that wants notices
-                foreach (GroupMembersData member in m_groupData.GetGroupMembers(remoteAgentIDstr, GroupID))
+                // The whole fan-out goes to a worker. It used to run right here, on the
+                // thread handling the packet from the avatar who pressed Send, and a
+                // notice goes to EVERY member who accepts them - online or not - so this
+                // loop is as long as the group. GetGroupMembers is itself a grid call,
+                // and each send can reach the user service or a member's own home grid,
+                // so the sender held a region thread until the last member was dealt
+                // with. That is why sending a notice could take the region down with it.
+                UUID noticeID = NoticeID;
+                string noticeRequester = remoteAgentIDstr;
+                UUID noticeGroupID = GroupID;
+                Util.FireAndForget(delegate
                 {
-                    GridInstantMessage msg = CreateGroupNoticeIM(UUID.Zero, NoticeID, (byte)InstantMessageDialog.GroupNotice);
-                    if (member.AcceptNotices)
+                    int sent = 0, declined = 0, unbounded = 0;
+                    foreach (GroupMembersData member in m_groupData.GetGroupMembers(noticeRequester, noticeGroupID))
                     {
-                        // Build notice IIM, one of reach, because the sending may be async
-                        msg.toAgentID = member.AgentID.Guid;
-                        OutgoingInstantMessage(msg, member.AgentID);
+                        if (!member.AcceptNotices || member.AgentID.IsZero())
+                        {
+                            declined++;
+                            continue;
+                        }
+
+                        // Bounded, so one notice cannot put the region's whole thread
+                        // pool into a queue of blocking sends. Waiting happens on THIS
+                        // worker, which is what it is for.
+                        if (m_NoticeFanoutGate.Wait(NOTICE_FANOUT_WAIT_MS))
+                        {
+                            SendNoticeTo(member.AgentID, noticeID, m_NoticeFanoutGate);
+                        }
+                        else
+                        {
+                            // A permit that never comes back is a bug, and dropping the
+                            // rest of a notice would be worse than sending it unbounded.
+                            // Say so rather than hiding either choice.
+                            m_log.WarnFormat(
+                                "[GROUPS]: Notice {0} fan-out waited {1}ms for a send permit and gave up waiting; sending to {2} unbounded",
+                                noticeID, NOTICE_FANOUT_WAIT_MS, member.AgentID);
+                            SendNoticeTo(member.AgentID, noticeID, null);
+                            unbounded++;
+                        }
+                        sent++;
                     }
-                }
+
+                    m_log.InfoFormat(
+                        "[GROUPS]: Notice {0} fanned out to {1} members, {2} not accepting notices{3}",
+                        noticeID, sent, declined,
+                        unbounded > 0 ? string.Format(", {0} sent unbounded", unbounded) : string.Empty);
+                }, null, "GroupsModule.GroupNoticeFanout");
             }
         }
 
@@ -1542,7 +1578,46 @@ public class GroupsModule : ISharedRegionModule, IGroupsModule
 
     #region IM Backed Processes
 
+    // How many notice sends may be in flight at once, grid-wide in this simulator.
+    // Deliberately a constant and not a config key: the number that matters is "small
+    // enough that a notice cannot own the pool", and the pool is not configurable here
+    // either. Static so that two notices sent at once share the ceiling.
+    private const int NOTICE_FANOUT_CONCURRENCY = 8;
+    private const int NOTICE_FANOUT_WAIT_MS = 30000;
+    private static readonly SemaphoreSlim m_NoticeFanoutGate =
+            new SemaphoreSlim(NOTICE_FANOUT_CONCURRENCY, NOTICE_FANOUT_CONCURRENCY);
+
+    /// <summary>
+    /// Send one group notice IM, releasing the fan-out permit when the send is done.
+    /// A fresh GridInstantMessage per member, because the sending is asynchronous.
+    /// </summary>
+    private void SendNoticeTo(UUID msgTo, UUID noticeID, SemaphoreSlim gate)
+    {
+        GridInstantMessage msg = CreateGroupNoticeIM(UUID.Zero, noticeID, (byte)InstantMessageDialog.GroupNotice);
+        msg.toAgentID = msgTo.Guid;
+
+        if (gate == null)
+        {
+            OutgoingInstantMessage(msg, msgTo);
+            return;
+        }
+
+        // Released exactly once, whichever way the send finishes. A double release
+        // would raise the ceiling silently, which is worse than having none.
+        int released = 0;
+        OutgoingInstantMessage(msg, msgTo, delegate
+        {
+            if (Interlocked.Exchange(ref released, 1) == 0)
+                gate.Release();
+        });
+    }
+
     private void OutgoingInstantMessage(GridInstantMessage msg, UUID msgTo)
+    {
+        OutgoingInstantMessage(msg, msgTo, null);
+    }
+
+    private void OutgoingInstantMessage(GridInstantMessage msg, UUID msgTo, Action onDone)
     {
         if (m_debugEnabled) m_log.InfoFormat("[Groups]: {0} called", System.Reflection.MethodBase.GetCurrentMethod().Name);
 
@@ -1551,11 +1626,21 @@ public class GroupsModule : ISharedRegionModule, IGroupsModule
         {
             if (m_debugEnabled) m_log.InfoFormat("[Groups]: MsgTo ({0}) is local, delivering directly", localClient.Name);
             localClient.SendInstantMessage(msg);
+            onDone?.Invoke();
         }
         else if (m_msgTransferModule != null)
         {
             if (m_debugEnabled) m_log.InfoFormat("[Groups]: MsgTo ({0}) is not local, delivering via TransferModule", msgTo);
-            m_msgTransferModule.SendInstantMessage(msg, delegate(bool success) { if (m_debugEnabled) m_log.DebugFormat("[Groups]: Message Sent: {0}", success?"Succeeded":"Failed"); });
+            m_msgTransferModule.SendInstantMessage(msg, delegate(bool success)
+            {
+                if (m_debugEnabled) m_log.DebugFormat("[Groups]: Message Sent: {0}", success?"Succeeded":"Failed");
+                onDone?.Invoke();
+            });
+        }
+        else
+        {
+            // No way to deliver it at all - still finish, or the permit never returns.
+            onDone?.Invoke();
         }
     }
 

@@ -157,17 +157,25 @@ public class HGMessageTransferModule : ISharedRegionModule, IMessageTransferModu
         }
 
         // m_log.DebugFormat("[HG INSTANT MESSAGE]: Delivering IM to {0} via XMLRPC", im.toAgentID);
-        // Is the user a local user?
-        string url = string.Empty;
-        bool foreigner = false;
-        if (UserManagementModule != null) // foreign user
-        {
-            foreigner = !UserManagementModule.IsLocalGridUser(toAgentID);
-            if(foreigner)
-                url = UserManagementModule.GetUserServerURL(toAgentID, "IMServerURI");
-        }
         Util.FireAndForget(delegate
             {
+                // Both of these used to run on the CALLER's thread, before this delegate
+                // was queued. Neither is cheap on a cache miss: IsLocalGridUser falls
+                // through to UserAccountService.GetUserAccount, an HTTP call to Robust,
+                // and GetUserServerURL falls through to GetServerURLs against the
+                // member's OWN HOME GRID - so an unreachable home grid cost the caller
+                // the full connector timeout. A group notice calls into here once per
+                // member, in a loop, on the region thread of the avatar who sent it,
+                // which is how sending a notice could take that region down.
+                string url = string.Empty;
+                bool foreigner = false;
+                if (UserManagementModule != null) // foreign user
+                {
+                    foreigner = !UserManagementModule.IsLocalGridUser(toAgentID);
+                    if(foreigner)
+                        url = UserManagementModule.GetUserServerURL(toAgentID, "IMServerURI");
+                }
+
                 UUID toDelAgentID = new UUID(im.toAgentID);
                 bool success = false;
                 if (foreigner && url.Length == 0) // we don't know about this user
