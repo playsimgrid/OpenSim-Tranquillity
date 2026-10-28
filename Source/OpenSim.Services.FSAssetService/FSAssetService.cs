@@ -328,6 +328,29 @@ public class FSAssetConnector : ServiceBase, IAssetService
                         {
                             byte[] data = File.ReadAllBytes(files[i]);
 
+                            if (data.Length == 0)
+                            {
+                                // Publishing an empty asset freezes it: AssetExists()
+                                // then reports the hash present and no later store can
+                                // replace it. Discriminate the two ways to get here.
+                                long onDisk;
+                                try { onDisk = new FileInfo(files[i]).Length; }
+                                catch (IOException) { onDisk = 0; }
+
+                                if (onDisk > 0)
+                                {
+                                    // Read back empty while the directory entry says
+                                    // otherwise - the write is not visible to this
+                                    // client yet. Leave it for the next cycle.
+                                    m_log.WarnFormat("[FSASSETS]: Spool file {0} read as 0 bytes but is {1} on disk, deferring", files[i], onDisk);
+                                    continue;
+                                }
+
+                                m_log.WarnFormat("[FSASSETS]: Discarding zero-length spool file {0}", files[i]);
+                                File.Delete(files[i]);
+                                continue;
+                            }
+
                             using (GZipStream gz = new GZipStream(new FileStream(diskFile + ".gz", FileMode.Create), CompressionMode.Compress))
                             {
                                 gz.Write(data, 0, data.Length);
@@ -417,10 +440,47 @@ public class FSAssetConnector : ServiceBase, IAssetService
         string s = HashToFile(hash);
         string diskFile = Path.Combine(m_FSBase, s);
 
-        if (File.Exists(diskFile + ".gz") || File.Exists(diskFile))
-            return true;
+        // A zero-length file is NOT an asset, and saying it is made every empty asset
+        // permanent: Store() skips the write whenever this returns true, so each later
+        // copy of the same content was dropped and the blank texture was served for
+        // ever. It also disabled the fallback repair path in Get(), which re-Store()s
+        // an asset fetched from the fallback service and had no way to land it.
+        FileInfo gz = new FileInfo(diskFile + ".gz");
+        if (gz.Exists)
+            return GzHasContent(gz);
+
+        FileInfo plain = new FileInfo(diskFile);
+        if (plain.Exists)
+            return plain.Length > 0;
 
         return false;
+    }
+
+    // A gzip member carries its uncompressed length in the last four bytes (ISIZE,
+    // little-endian), so an empty payload is recognisable without decompressing it.
+    // Only valid because everything under m_FSBase is written as a single member by
+    // Writer() below. Anything unreadable is reported as present: a read hiccup must
+    // not be turned into a duplicate store.
+    private static bool GzHasContent(FileInfo fi)
+    {
+        if (fi.Length < 18)   // shorter than an empty gzip member
+            return false;
+
+        try
+        {
+            using (FileStream fs = new FileStream(fi.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                byte[] tail = new byte[4];
+                fs.Seek(-4, SeekOrigin.End);
+                if (fs.Read(tail, 0, 4) != 4)
+                    return true;
+                return BitConverter.ToUInt32(tail, 0) != 0;
+            }
+        }
+        catch (IOException)
+        {
+            return true;
+        }
     }
 
     public virtual bool[] AssetsExist(string[] ids)
@@ -682,7 +742,16 @@ public class FSAssetConnector : ServiceBase, IAssetService
 
         if (!AssetExists(hash))
         {
-            string tempFile = Path.Combine(Path.Combine(m_SpoolDirectory, "spool"), hash + ".asset");
+            // The temp name must be unique per ATTEMPT, not per hash. File.Create opens
+            // FileShare.None, so two concurrent stores of the same content opened the
+            // identical path and the loser threw
+            //   The process cannot access the file '<spool>/spool/<hash>.asset'
+            //   because it is being used by another process
+            // out of Store() and out of HandleRequest(), losing its metadata row. This
+            // is not an NFS fault - the race is the same on local disk; NFS only makes
+            // the window wider.
+            string tempFile = Path.Combine(Path.Combine(m_SpoolDirectory, "spool"),
+                    hash + "." + Guid.NewGuid().ToString("N") + ".tmp");
             string finalFile = Path.Combine(m_SpoolDirectory, hash + ".asset");
 
             if (!File.Exists(finalFile))
@@ -695,13 +764,36 @@ public class FSAssetConnector : ServiceBase, IAssetService
                     asset.Data = Utils.StringToBytes(xml);
                 }
 
-                FileStream fs = File.Create(tempFile);
+                try
+                {
+                    // using, because the old bare FileStream + Close() leaked its handle
+                    // whenever the write threw - a full spool, say - and a leaked handle
+                    // on a hash-named temp file poisoned that hash for the life of the
+                    // process. Flush(true) puts the bytes on the device before the file
+                    // is published under its final name.
+                    using (FileStream fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        fs.Write(asset.Data, 0, asset.Data.Length);
+                        fs.Flush(true);
+                    }
 
-                fs.Write(asset.Data, 0, asset.Data.Length);
+                    // Overwrite: the winner of a race has already published byte-identical
+                    // content under this name (the name IS the content hash), and a plain
+                    // File.Move throws when the target exists.
+                    File.Move(tempFile, finalFile, true);
+                }
+                catch (Exception e)
+                {
+                    // Fail the store instead of letting this reach HandleRequest(). The
+                    // metadata row below is deliberately NOT written: a row without a
+                    // blob is exactly what gets served as an empty asset for ever.
+                    m_log.ErrorFormat("[FSASSETS]: Could not spool asset {0} ({1} bytes, hash {2}): {3}",
+                            asset.ID, asset.Data.Length, hash, e.Message);
 
-                fs.Close();
+                    try { File.Delete(tempFile); } catch (IOException) { }
 
-                File.Move(tempFile, finalFile);
+                    return UUID.Zero.ToString();
+                }
             }
         }
 
