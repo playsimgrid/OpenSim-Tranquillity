@@ -68,6 +68,12 @@ public class SculptMap
         {
             if (needsScaling)
             {
+                // PRECONDITION: bm must be opaque. DrawBitmap composites, so a source pixel
+                // with alpha 0 contributes nothing and the destination keeps transparent
+                // black - measured, it takes a sculpt map from 246-3257 distinct vertices to
+                // 1. Meshmerizer.GenerateCoordsAndFacesFromPrimSculptData guarantees this by
+                // calling FlattenSculptAlpha on the decoded bitmap; if that call is ever
+                // removed, alpha-bearing sculpts collapse here.
                 SKBitmap scaled = new SKBitmap(width, height, bm.ColorType, bm.AlphaType);
                 using (var canvas = new SKCanvas(scaled))
                 {
