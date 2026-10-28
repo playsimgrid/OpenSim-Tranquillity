@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -91,6 +91,10 @@ public class HGFriendsModule : FriendsModule, ISharedRegionModule, IFriendsModul
         if (friendsConfig != null)
         {
             m_levelHGFriends = friendsConfig.GetInt("LevelHGFriends", 0);
+
+            HGStatusNotifier.Configure(
+                friendsConfig.GetInt("HGStatusNotifyTimeout", HGStatusNotifier.TimeoutSecs),
+                friendsConfig.GetInt("MaxConcurrentHGStatusNotifies", HGStatusNotifier.MaxConcurrent));
 
             // TODO: read in all config variables pertaining to
             // HG friendship permissions

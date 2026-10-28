@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -98,8 +98,6 @@ public class OpenSim : OpenSimBase
         IConfig startupConfig = Config.Configs["Startup"];
         IConfig networkConfig = Config.Configs["Network"];
 
-        int stpMinThreads = 2;
-        int stpMaxThreads = 15;
 
         if (startupConfig != null)
         {
@@ -125,8 +123,24 @@ public class OpenSim : OpenSimBase
                     Utils.EnumTryParse<FireAndForgetMethod>(asyncCallMethodStr, out FireAndForgetMethod asyncCallMethod))
                 Util.FireAndForgetMethod = asyncCallMethod;
 
-            stpMinThreads = startupConfig.GetInt("MinPoolThreads", 2 );
-            stpMaxThreads = startupConfig.GetInt("MaxPoolThreads", 25);
+            // MinPoolThreads and MaxPoolThreads used to be read into two locals here and then
+            // never looked at again - they configured the SmartThreadPool, which went away when
+            // FireAndForget moved to the .NET pool, and the keys outlived it. OpenSimDefaults.ini
+            // still ships MaxPoolThreads = 300 and it has had no effect for years. Say so, once,
+            // rather than leave the next person tuning a dead number while a region freezes.
+            if (startupConfig.Contains("MinPoolThreads") || startupConfig.Contains("MaxPoolThreads"))
+                m_log.Warn(
+                    "[OPENSIM MAIN]: MinPoolThreads/MaxPoolThreads are obsolete SmartThreadPool settings and are ignored. "
+                    + "Use MinWorkerThreads/MinIOThreads to raise the .NET thread pool floor.");
+
+            // The floor itself. 100 is chosen against the fan-out caps, not plucked: the friends
+            // status notifications can hold 16 local plus 8 foreign workers blocked at once, and
+            // the floor has to leave the rest of the region room to breathe above that. Raise it
+            // on a busy hub; there is no reason to lower it.
+            Util.SetThreadPoolFloor(
+                startupConfig.GetInt("MinWorkerThreads", 100),
+                startupConfig.GetInt("MinIOThreads", 100));
+
             m_consolePrompt = startupConfig.GetString("ConsolePrompt", @"Region (\R) ");
 
             int dnsTimeout = startupConfig.GetInt("DnsTimeout", 30000);

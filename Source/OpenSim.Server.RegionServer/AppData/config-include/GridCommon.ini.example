@@ -224,6 +224,22 @@
     ; User level required to be able to send friendship invitations to foreign users
     ;LevelHGFriends = 0;
 
+    ; Telling a FOREIGN grid that one of our users arrived or left is a fan-out: one
+    ; blocking POST per grid the user has friends on, made on a .NET thread pool
+    ; worker. An unreachable grid used to hold that worker for the full 15 seconds,
+    ; and nothing limited how many users could be doing it at once - which is how a
+    ; busy hub region stops answering logins and teleports while its own SimFPS
+    ; still looks fine.
+    ;
+    ; HGStatusNotifyTimeout is per grid, in seconds. It is short because a friend's
+    ; dot turning grey late costs nothing.
+    ; MaxConcurrentHGStatusNotifies is the ceiling on how many of these fan-outs may
+    ; be in flight at once; past it, notifications are dropped with a log line
+    ; rather than queued, and viewers pick the status up on their next refresh.
+    ;
+    ;HGStatusNotifyTimeout = 4
+    ;MaxConcurrentHGStatusNotifies = 8
+
 [MapImageService]
     MapImageServerURI = "${Const|PrivURL}:${Const|PrivatePort}"
 

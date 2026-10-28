@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -333,9 +333,21 @@ public static class Watchdog
         int msElapsed = now - LastWatchdogThreadTick;
 
         if (msElapsed > WATCHDOG_INTERVAL_MS * 2)
+        {
+            // The pool figures are on this line because this line IS the symptom. The watchdog
+            // tick is itself a thread pool work item, so "N ms since Watchdog last ran" is very
+            // often not a sick watchdog but a starved pool, and without the counts beside it
+            // there is no way to tell the two apart after the fact. A high pending count next
+            // to a thread count stuck near the floor is starvation; a low pending count is
+            // something else, and worth looking elsewhere for.
             m_log.WarnFormat(
-                "[WATCHDOG]: {0} ms since Watchdog last ran.  Interval should be approximately {1} ms",
-                msElapsed, WATCHDOG_INTERVAL_MS);
+                "[WATCHDOG]: {0} ms since Watchdog last ran.  Interval should be approximately {1} ms. "
+                + "Thread pool: {2} threads, {3} work items pending, {4} completed.",
+                msElapsed, WATCHDOG_INTERVAL_MS,
+                ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount, ThreadPool.CompletedWorkItemCount);
+        }
+
+        CheckThreadPoolBacklog();
 
         LastWatchdogThreadTick = Environment.TickCount & Int32.MaxValue;
 
@@ -400,5 +412,44 @@ public static class Watchdog
         StatsManager.RecordStats();
 
         m_watchdogTimer.Change(WATCHDOG_INTERVAL_MS, Timeout.Infinite);
+    }
+
+    /// <summary>Pending work items above which the pool is considered to be backing up.</summary>
+    /// <remarks>
+    /// A healthy region queues plenty of short work items, so a momentary spike means nothing -
+    /// it is a backlog that PERSISTS which says the pool is not draining. Hence the consecutive
+    /// count below rather than a single reading: three ticks is 7.5 seconds of sustained
+    /// backlog, long enough that it is not a burst and short enough to be in the log before the
+    /// complaints arrive.
+    /// </remarks>
+    public static int ThreadPoolBacklogThreshold = 64;
+
+    private static int m_backlogTicks;
+    private static long m_lastBacklogLogMS;
+
+    private static void CheckThreadPoolBacklog()
+    {
+        long pending = ThreadPool.PendingWorkItemCount;
+
+        if (pending < ThreadPoolBacklogThreshold)
+        {
+            m_backlogTicks = 0;
+            return;
+        }
+
+        if (++m_backlogTicks < 3)
+            return;
+
+        long nowMS = Environment.TickCount64;
+        if (nowMS - m_lastBacklogLogMS < 60000)
+            return;
+
+        m_lastBacklogLogMS = nowMS;
+        ThreadPool.GetMinThreads(out int minWorker, out int minIO);
+
+        m_log.WarnFormat(
+            "[WATCHDOG]: thread pool is not draining - {0} work items pending for {1}s, {2} threads running, floor is {3} worker / {4} IO. "
+            + "Something is making blocking calls on pool threads; logins, teleports and inbound requests will be late or time out.",
+            pending, m_backlogTicks * WATCHDOG_INTERVAL_MS / 1000, ThreadPool.ThreadCount, minWorker, minIO);
     }
 }

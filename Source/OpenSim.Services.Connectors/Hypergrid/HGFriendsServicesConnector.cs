@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -251,7 +251,16 @@ public class HGFriendsServicesConnector : FriendsSimConnector
 
     }
 
-    public List<UUID> StatusNotification(List<string> friends, UUID userID, bool online)
+    /// <summary>
+    /// Tell a foreign grid's friends server that one of our users came online or went offline.
+    /// </summary>
+    /// <param name="timeoutsecs">
+    /// How long to wait for that grid. Defaults to the 15s this has always used, because the
+    /// handlers that answer an incoming hgfriends request are on paths where a slow answer
+    /// still beats none. HGStatusNotifier, which is a fan-out over every domain a user has
+    /// friends in, passes something much shorter - see HGStatusNotifier.Notify.
+    /// </param>
+    public List<UUID> StatusNotification(List<string> friends, UUID userID, bool online, int timeoutsecs = 15)
     {
         Dictionary<string, object> sendData = new Dictionary<string, object>();
         List<UUID> friendsOnline = new List<UUID>();
@@ -273,7 +282,7 @@ public class HGFriendsServicesConnector : FriendsSimConnector
             reply = SynchronousRestFormsRequester.MakeRequest("POST",
                     uri,
                     ServerUtils.BuildQueryString(sendData),
-                    15,
+                    timeoutsecs,
                     null,
                     false);
         }

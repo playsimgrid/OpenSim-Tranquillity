@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -176,6 +176,13 @@ public class FriendsModule : ISharedRegionModule, IFriendsModule
 
             m_FriendsService = ServerUtils.LoadPlugin<IFriendsService>(connector, args);
             m_FriendsSimConnector = new FriendsSimConnector();
+
+            // Both static: one connector instance per region module, but one thread pool per
+            // process, so the cap has to be process-wide to mean anything.
+            FriendsSimConnector.ConfigureStatusNotify(
+                friendsConfig.GetInt("StatusNotifyTimeout", FriendsSimConnector.StatusNotifyTimeoutSecs),
+                friendsConfig.GetInt("MaxConcurrentStatusNotifies", FriendsSimConnector.MaxConcurrentStatusNotifies),
+                friendsConfig.GetInt("StatusNotifyQueueDepth", FriendsSimConnector.StatusNotifyQueueDepth));
 
             // Instantiate the request handler
             IHttpServer server = MainServer.Instance.GetHttpServer((uint)mPort);

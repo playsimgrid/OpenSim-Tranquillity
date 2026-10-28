@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) Contributors, http://opensimulator.org/
  * See CONTRIBUTORS.TXT for a full list of copyright holders.
  *
@@ -3351,6 +3351,66 @@ public static class Util
     private static readonly Dictionary<string, int> m_fireAndForgetCallsInProgress = new();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <summary>
+    /// Raise the floor under the .NET thread pool, so that it stops throttling thread creation
+    /// before it has enough workers to absorb the blocking calls this process makes.
+    /// </summary>
+    /// <remarks>
+    /// Why this is needed at all: FireAndForget below dispatches through
+    /// ThreadPool.UnsafeQueueUserWorkItem, and a great deal of what gets dispatched that way
+    /// is a BLOCKING outbound HTTP call. The pool keeps min(ProcessorCount) workers ready and
+    /// then adds further ones at roughly one per second, which is tuned for work items that
+    /// finish quickly; a burst of items that each sit on a socket for seconds exhausts the
+    /// ready workers and then every other queued item - logins, teleports, QUERYACCESS, the
+    /// status page, the watchdog tick - waits out that one-per-second drip. The region does
+    /// not deadlock, it just stops answering, which is exactly what a starved region looks
+    /// like from outside.
+    ///
+    /// This is insurance, not a fix. The fix for any given fan-out is to take it off the pool,
+    /// or at least to bound it and give it a short timeout, as the friends status notifications
+    /// now do. A floor only buys headroom: anything genuinely unbounded will still eat whatever
+    /// floor it is given. Measured, on one machine, with 120 notifications to sims taking 3s
+    /// each: the old shape grew the pool from 0 to 121 threads with 120 work items queued
+    /// behind them, while the same 120 through the new sender threads left the pool at its
+    /// floor of 16 with nothing pending.
+    ///
+    /// Only the minimum is touched. The maximum is deliberately left alone: capping the pool
+    /// is how you cause this problem, not how you cure it, and the MaxPoolThreads key that
+    /// OpenSimDefaults.ini still carries is a SmartThreadPool leftover that nothing has read
+    /// since the move to the .NET pool.
+    /// </remarks>
+    /// <returns>true if the floor was raised or already high enough.</returns>
+    public static bool SetThreadPoolFloor(int minWorkerThreads, int minIOThreads)
+    {
+        ThreadPool.GetMinThreads(out int curWorker, out int curIO);
+
+        // Never lower what is already there. Something else may have raised it for a reason,
+        // and a "floor" that can push the floor down is a trapdoor.
+        int wantWorker = Math.Max(curWorker, minWorkerThreads);
+        int wantIO = Math.Max(curIO, minIOThreads);
+
+        if (wantWorker == curWorker && wantIO == curIO)
+        {
+            m_log.InfoFormat(
+                "[UTIL]: thread pool floor already at {0} worker / {1} IO, leaving it", curWorker, curIO);
+            return true;
+        }
+
+        if (!ThreadPool.SetMinThreads(wantWorker, wantIO))
+        {
+            m_log.WarnFormat(
+                "[UTIL]: could not raise the thread pool floor to {0} worker / {1} IO; it stays at {2} / {3}",
+                wantWorker, wantIO, curWorker, curIO);
+            return false;
+        }
+
+        m_log.InfoFormat(
+            "[UTIL]: thread pool floor raised from {0} worker / {1} IO to {2} / {3}",
+            curWorker, curIO, wantWorker, wantIO);
+
+        return true;
+    }
+
     public static void FireAndForget(System.Threading.WaitCallback callback)
     {
         FireAndForget(callback, null, null);
