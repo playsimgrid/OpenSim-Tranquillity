@@ -30,6 +30,7 @@ using System.Reflection;
 using OpenSim.Framework;
 using OpenSim.Services.Interfaces;
 using OpenSim.Services.Connectors.InstantMessage;
+using OpenSim.Services.Connectors.Hypergrid;
 using GridRegion = OpenSim.Services.Interfaces.GridRegion;
 using OpenSim.Server.Base;
 
@@ -68,6 +69,16 @@ public class HGInstantMessageService : IInstantMessage
     // Deliberately shorter than the 120s success TTL: a user whose home grid comes
     // back is worth re-probing sooner than one we have already reached.
     private const int LOCATE_FAIL_TTL = 60;
+
+    // A hard ceiling on the number of threads the locate path may hold at once.
+    // The negative cache above stops the SECOND message to an unreachable user from
+    // paying anything, but one fan-out to a group holding many DISTINCT unreachable
+    // members still pays once for each, all at the same time - so the cache alone
+    // does not bound what a single notice can cost. Past this ceiling a lookup is
+    // refused outright rather than queued: a queued locate still owns the Robust
+    // worker thread that presence and teleport need, which is the whole complaint.
+    private static int m_MaxConcurrentLocates = 8;
+    private static SemaphoreSlim m_LocateGate = new SemaphoreSlim(8, 8);
 
     private static bool m_ForwardOfflineGroupMessages;
     private static bool m_InGatekeeper;
@@ -129,6 +140,26 @@ public class HGInstantMessageService : IInstantMessage
             }
 
             m_InGatekeeper = serverConfig.GetBoolean("InGatekeeper", false);
+
+            // Both of these exist to stop a group notice holding Robust worker threads
+            // while a dead home grid times out. The timeout is this connector's, and
+            // deliberately not the 10s the rest of its calls get: those are on login
+            // and teleport paths, where a slow answer still beats no answer, and
+            // locate_user from here is the only call made from a message fan-out.
+            int locateTimeout = serverConfig.GetInt("LocateUserTimeout", 4000);
+            if (locateTimeout > 0)
+                UserAgentServiceConnector.LocateUserTimeoutMs = locateTimeout;
+
+            int maxLocates = serverConfig.GetInt("MaxConcurrentLocates", 8);
+            if (maxLocates > 0)
+            {
+                m_MaxConcurrentLocates = maxLocates;
+                m_LocateGate = new SemaphoreSlim(maxLocates, maxLocates);
+            }
+
+            m_log.InfoFormat(
+                "[HG IM SERVICE]: locate_user timeout {0}ms, at most {1} lookups in flight",
+                UserAgentServiceConnector.LocateUserTimeoutMs, m_MaxConcurrentLocates);
 
             IConfig cnf = config.Configs["Messaging"];
             if (cnf == null)
@@ -235,6 +266,18 @@ public class HGInstantMessageService : IInstantMessage
                 m_log.DebugFormat(
                     "[HG IM SERVICE]: Skipping LocateUser for {0}, a recent attempt failed", toAgentID);
             }
+            else if (!m_LocateGate.Wait(0))
+            {
+                // Refused, not queued, and logged at Error because this one means the
+                // grid is now shedding messages: there are already m_MaxConcurrentLocates
+                // lookups in flight, and waiting behind them would hold this thread for
+                // exactly the reason the ceiling exists. Not entered in the negative
+                // cache - the destination was never asked, so nothing was learned
+                // about it.
+                m_log.ErrorFormat(
+                    "[HG IM SERVICE]: Refusing to locate {0}: {1} lookups already in flight. This message is not delivered.",
+                    toAgentID, m_MaxConcurrentLocates);
+            }
             else
             {
                 m_log.DebugFormat("[HG IM SERVICE]: User is not present. Checking location with User Agent service");
@@ -244,8 +287,15 @@ public class HGInstantMessageService : IInstantMessage
                 }
                 catch (Exception e)
                 {
-                    m_log.Warn("[HG IM SERVICE]: LocateUser call failed ", e);
+                    // One line and no stack trace: under a fan-out this fires once per
+                    // unreachable member and the stack is identical every time, so the
+                    // trace buys nothing and buries the rest of the log.
+                    m_log.WarnFormat("[HG IM SERVICE]: LocateUser for {0} failed: {1}", toAgentID, e.Message);
                     url = string.Empty;
+                }
+                finally
+                {
+                    m_LocateGate.Release();
                 }
 
                 // An empty answer is as expensive to obtain as a thrown one, so both count.

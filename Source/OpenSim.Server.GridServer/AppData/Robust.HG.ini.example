@@ -870,6 +870,20 @@
     ; This should always be true in the Robust config
     InGatekeeper = True
 
+    ; How long to wait for a locate_user answer from a user's home grid, in ms.
+    ; This is the one UserAgentService call made while a message is being fanned
+    ; out - a group notice sends one message per online member - so a dead home
+    ; grid costs a Robust worker thread this long, per distinct unreachable user,
+    ; all at once. Every other UserAgentService call keeps its 10s: those are on
+    ; login and teleport paths, where a slow answer still beats no answer.
+    ;LocateUserTimeout = 4000
+
+    ; Hard ceiling on locate_user lookups in flight at once. Past it a lookup is
+    ; refused and logged at Error rather than queued, because a queued lookup
+    ; still holds the thread that presence and teleport want. Raise it only if
+    ; your Robust pool can spare the threads.
+    ;MaxConcurrentLocates = 8
+
 
 [Messaging]
     ; OfflineIM

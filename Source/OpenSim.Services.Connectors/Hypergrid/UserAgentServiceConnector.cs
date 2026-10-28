@@ -147,7 +147,14 @@ public class UserAgentServiceConnector : SimulationServiceConnector, IUserAgentS
         // no-op
     }
 
-    private Hashtable CallServer(string methodName, Hashtable hash)
+    // locate_user's own timeout, set from LocateUserTimeout in [HGInstantMessageService].
+    // Every other call through CallServer keeps the 10s default: those run on login and
+    // teleport paths where a slow answer still beats no answer. locate_user is the only
+    // one called from a message fan-out, where a dead home grid costs a Robust worker
+    // thread the full timeout and a group notice can hold the pool.
+    public static int LocateUserTimeoutMs = 4000;
+
+    private Hashtable CallServer(string methodName, Hashtable hash, int timeoutMs = 10000)
     {
         IList paramList = new ArrayList();
         paramList.Add(hash);
@@ -158,7 +165,7 @@ public class UserAgentServiceConnector : SimulationServiceConnector, IUserAgentS
         XmlRpcResponse response = null;
         try
         {
-            using HttpClient hclient = WebUtil.GetNewGlobalHttpClient(10000);
+            using HttpClient hclient = WebUtil.GetNewGlobalHttpClient(timeoutMs);
             response = request.Send(m_ServerURL, hclient);
         }
         catch (Exception e)
@@ -501,7 +508,7 @@ public class UserAgentServiceConnector : SimulationServiceConnector, IUserAgentS
         Hashtable hash = new Hashtable();
         hash["userID"] = userID.ToString();
 
-        hash = CallServer("locate_user", hash);
+        hash = CallServer("locate_user", hash, LocateUserTimeoutMs);
 
         string url = string.Empty;
 
