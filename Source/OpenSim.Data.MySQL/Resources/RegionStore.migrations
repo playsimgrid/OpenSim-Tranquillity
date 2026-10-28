@@ -578,3 +578,28 @@ ALTER TABLE `prims`
 BEGIN;
 ALTER TABLE `prims` ADD COLUMN `StartStr` text default NULL;
 COMMIT;
+
+:VERSION 71         #----- emoji in prim text, and keyframe motion larger than 64 KiB
+#
+# 69 and 70 are deliberately skipped. The DarkHearts fork already stamps its own
+# RegionStore 69, and NGC 1.1 ships a 69 and a 70 of its own, so a migration of
+# ours numbered 69 or 70 is silently skipped on any database that has seen either
+# of them. Our numbering continues at 71 for that reason - do not renumber this.
+#
+# prims.Text was created as CHARACTER SET utf8, which in MySQL and MariaDB means
+# utf8mb3 - three bytes per character, no astral plane, so no emoji. A prim whose
+# hover text contains one fails to save, and the save fails for the whole prim.
+# Only Text is converted here because that is the column the failure was measured
+# on; Name, Description, SitName and TouchName carry the identical defect and are
+# NOT converted, because converting all five adds about 2 KiB to the maximum row
+# and nothing has measured how close prims is to the 65,535-byte InnoDB limit on
+# a grid with this much history. None of the five is indexed, so index key length
+# is not a constraint on doing the rest later.
+#
+# prims.KeyframeMotion was created as blob, which caps at 65,535 bytes. A long
+# keyframe animation exceeds it and, again, the whole prim fails to save.
+BEGIN;
+ALTER TABLE `prims`
+	MODIFY `Text` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+	MODIFY `KeyframeMotion` mediumblob;
+COMMIT;
