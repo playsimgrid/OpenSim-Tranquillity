@@ -653,7 +653,9 @@ public class Meshmerizer : IMesher, INonSharedRegionModule
         {
             if (primShape.SculptData == null || primShape.SculptData.Length == 0)
             {
-                m_log.Warn("[PHYSICS]: Unable to generate a Sculpty physics proxy. SculptData is null/zero length");
+                m_log.WarnFormat(
+                    "[PHYSICS]: No sculpt data for prim {0}, texture {1} - no physics proxy. The asset is missing or zero length.",
+                    primName, primShape.SculptTexture);
                 return false;
             }
 
@@ -684,7 +686,9 @@ public class Meshmerizer : IMesher, INonSharedRegionModule
             }
             catch (Exception ex)
             {
-                m_log.Error("[PHYSICS]: Unable to generate a Sculpty physics proxy. Sculpty texture decode failed: " + ex.Message);
+                m_log.ErrorFormat(
+                    "[PHYSICS]: Sculpty texture decode failed for prim {0}, texture {1} ({2} bytes): {3}",
+                    primName, primShape.SculptTexture, primShape.SculptData.Length, ex.Message);
                 return false;
             }
         }

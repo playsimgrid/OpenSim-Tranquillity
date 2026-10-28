@@ -706,7 +706,17 @@ public class ubODEMeshmerizer : IMesher, INonSharedRegionModule
         SKBitmap idata = null;
 
         if (primShape.SculptData == null || primShape.SculptData.Length == 0)
+        {
+            // This used to return silently, so an EMPTY sculpt asset - the thing an
+            // asset store serves after a failed store - produced no log line at all
+            // and the prim simply had no physics. The two causes need separate
+            // messages: nothing arrived, versus something arrived and would not
+            // decode. Only the first one points at the asset service.
+            m_log.WarnFormat(
+                "[PHYSICS]: No sculpt data for prim {0}, texture {1} - no physics proxy. The asset is missing or zero length.",
+                primName, primShape.SculptTexture);
             return false;
+        }
 
         try
         {               
@@ -715,12 +725,19 @@ public class ubODEMeshmerizer : IMesher, INonSharedRegionModule
 
             if (idata == null)
             {
+                m_log.WarnFormat(
+                    "[PHYSICS]: Sculpt texture {1} for prim {0} decoded to nothing ({2} bytes in) - no physics proxy.",
+                    primName, primShape.SculptTexture, primShape.SculptData.Length);
                 return false;
             }
         }
         catch (Exception ex)
         {
-            m_log.Error("[PHYSICS]: Unable to generate a Sculpty physics proxy. Sculpty texture decode failed: " + ex.Message);
+            // Naming the texture is the difference between a count nobody can act on
+            // and a list of assets to go and look at.
+            m_log.ErrorFormat(
+                "[PHYSICS]: Sculpty texture decode failed for prim {0}, texture {1} ({2} bytes): {3}",
+                primName, primShape.SculptTexture, primShape.SculptData.Length, ex.Message);
             return false;
         }
 
