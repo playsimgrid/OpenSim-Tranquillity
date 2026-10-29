@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using OpenSim.Framework;
 using Nini.Config;
 using OpenMetaverse;
@@ -53,7 +54,9 @@ public sealed class ServerSideBakingRegion : IServerSideBakingRegion
         m_bakedCof.TryRemove(agentId, out _);
         Handshake.Clear(agentId);
         m_lastChangeBake.TryRemove(agentId, out _);
+        m_legacyWear.TryRemove(agentId, out _);
         m_lastGoodBodyParts.TryRemove(agentId, out _);
+        m_bakeGate.TryRemove(agentId, out _);
     }
 
     // ------------------------------------------------------------------ the body-part guard
@@ -153,6 +156,50 @@ public sealed class ServerSideBakingRegion : IServerSideBakingRegion
             });
         return claimed;
     }
+
+    // ------------------------------------------------------------------ the legacy wear note
+
+    private readonly ConcurrentDictionary<UUID, bool> m_legacyWear = new();
+
+    /// <summary>
+    /// Note that a legacy <c>AgentIsNowWearing</c> packet arrived for this agent, so that the change bake which
+    /// follows re-reads the Current Outfit folder before it composites (<see cref="TakeLegacyWear"/>). The packet
+    /// carries one item or a null id per type and its merge can clear or shrink a type the folder still holds
+    /// several items of; the folder is the authority for clothing on a region that bakes server-side.
+    ///
+    /// <para>A flag-off region notes nothing: the module does not subscribe the packet there, and this guard keeps
+    /// a stray subscription inert, as <see cref="TryClaimChangeBake"/> does for the change trigger (ADR-001).</para>
+    /// </summary>
+    public void NoteLegacyWear(UUID agentId)
+    {
+        if (!ServerSideBakingEnabled) return;
+        m_legacyWear[agentId] = true;
+    }
+
+    /// <summary>
+    /// Take the note: true once after a <see cref="NoteLegacyWear"/>, false until the next one. Atomic, so two
+    /// change bakes landing together read the folder once between them, and a packet that arrives during a bake
+    /// is taken by the next.
+    /// </summary>
+    public bool TakeLegacyWear(UUID agentId) => m_legacyWear.TryRemove(agentId, out _);
+
+    // ------------------------------------------------------------------ the bake gate
+
+    private readonly ConcurrentDictionary<UUID, SemaphoreSlim> m_bakeGate = new();
+
+    /// <summary>
+    /// One bake at a time per agent on this region. <c>BakeOrchestrator.Run</c> reads the bake index at the start
+    /// of a run and writes it at the end, so a second bake for the same agent that starts during the first compares
+    /// its hashes with the index the first is about to replace, composites every channel again and leaves the
+    /// first bake's assets named by nothing. The module's <c>BakeAsync</c> waits here before it reads the
+    /// appearance and releases when it has logged the bake, so a bake that arrives during another starts when
+    /// that one has written its index, finds it, and reuses.
+    ///
+    /// <para>Per agent, not per region: two agents' bakes still run side by side. The gate exists on a flag-off
+    /// region too, because the console bake runs there. It is never disposed: <see cref="Forget"/> drops the entry
+    /// so a returning agent gets a fresh one, and a bake still holding the old one must be able to release it.</para>
+    /// </summary>
+    public SemaphoreSlim BakeGate(UUID agentId) => m_bakeGate.GetOrAdd(agentId, _ => new SemaphoreSlim(1, 1));
 
     /// <summary>
     /// Whether the flag is on for one region. The simulator-wide <c>[Appearance] ServerSideBaking</c> is the

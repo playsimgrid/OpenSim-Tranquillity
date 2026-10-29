@@ -1318,8 +1318,17 @@ public class AvatarFactoryModule : IAvatarFactoryModule, INonSharedRegionModule
         // Semantics preserved from the old code for slots the viewer DID mention: the slot is
         // replaced by exactly the listed items, and an ItemID of UUID.Zero contributes nothing
         // (AvatarWearable.Add ignores Zero), so "type X, item Zero" still means "clear slot X".
-        // Only unlisted slots change behaviour: they now keep their current contents.
+        // Only unlisted slots change behaviour: they now keep their current contents. One later
+        // exception, in MergeNowWearing: a slot listed with a single item the agent already wears
+        // among several keeps all of them, because the legacy packet carries one item per type.
         AvatarWearable[] merged = MergeNowWearing(sp.Appearance.Wearables, e.NowWearing, out bool changed);
+
+        // Logged whether or not the table changed. This packet is the one message in the appearance path the
+        // region did not record: a Firestorm outfit swap on a server-side-baking region left a nine-layer type
+        // at one item (a canary on 2026-10-16, twice on 2026-10-27) with no line to show which message did it.
+        m_log.LogDebug("[AVFACTORY]: AgentIsNowWearing from {Name}: {PerType} → {Before} / {After}, {Changed}",
+            client.Name, DescribeNowWearing(e.NowWearing), DescribeWearables(sp.Appearance.Wearables),
+            DescribeWearables(merged), changed ? "changed" : "unchanged");
 
         if (!changed)
         {
@@ -1349,6 +1358,9 @@ public class AvatarFactoryModule : IAvatarFactoryModule, INonSharedRegionModule
     /// listed items for that type (in order, capped by <see cref="AvatarWearable.Add"/>). Asset ids are
     /// carried over from <paramref name="existing"/> for items already known in that slot; new items get
     /// <see cref="UUID.Zero"/> and are resolved later on save, as before.</item>
+    /// <item>Except: a type listed with exactly one non-Zero item that <paramref name="existing"/> already
+    /// holds among several keeps its existing items unchanged (items and asset ids, in order). The legacy
+    /// packet carries one item per type, so it cannot describe a multi-layer type and must not shrink one.</item>
     /// <item>A listed item with <see cref="UUID.Zero"/> as its id contributes nothing, so a type listed only
     /// with Zero ends up empty. This is the historical meaning of Zero ("not wearing this type").</item>
     /// <item>A wearable type that does not appear in <paramref name="nowWearing"/> keeps its current items.</item>
@@ -1363,11 +1375,19 @@ public class AvatarFactoryModule : IAvatarFactoryModule, INonSharedRegionModule
     {
         existing ??= Array.Empty<AvatarWearable>();
 
+        // The non-Zero item ids the viewer lists per type, in packet order. A type listed only with
+        // Zero gets an empty list, which clears it below (Add() ignores Zero either way).
         int length = existing.Length;
-        var listedTypes = new HashSet<int>();
+        var listed = new Dictionary<int, List<UUID>>();
         foreach (AvatarWearingArgs.Wearable wear in nowWearing)
         {
-            listedTypes.Add(wear.Type);
+            if (!listed.TryGetValue(wear.Type, out List<UUID> ids))
+            {
+                ids = new List<UUID>();
+                listed[wear.Type] = ids;
+            }
+            if (!wear.ItemID.IsZero())
+                ids.Add(wear.ItemID);
             if (wear.Type >= length)
                 length = wear.Type + 1;
         }
@@ -1376,28 +1396,76 @@ public class AvatarFactoryModule : IAvatarFactoryModule, INonSharedRegionModule
         for (int i = 0; i < length; i++)
         {
             merged[i] = new AvatarWearable();
-            if (listedTypes.Contains(i))
-                continue;
+            AvatarWearable current = i < existing.Length ? existing[i] : null;
 
-            // Unlisted slot: keep what the agent already has.
-            if (i < existing.Length && existing[i] != null)
+            if (!listed.TryGetValue(i, out List<UUID> ids))
             {
-                for (int j = 0; j < existing[i].Count; j++)
-                    merged[i].Add(existing[i][j].ItemID, existing[i][j].AssetID);
+                // Unlisted slot: keep what the agent already has.
+                CopyItems(current, merged[i]);
+                continue;
             }
-        }
 
-        foreach (AvatarWearingArgs.Wearable wear in nowWearing)
-        {
-            // Listed slot: exactly the listed items. Add() ignores UUID.Zero, so a Zero entry clears.
-            UUID assetID = UUID.Zero;
-            if (wear.Type < existing.Length && existing[wear.Type] != null)
-                assetID = existing[wear.Type].GetAsset(wear.ItemID);
-            merged[wear.Type].Add(wear.ItemID, assetID);
+            // Listed slot naming one item the agent already wears among several: keep every layer.
+            // Firestorm's sendAgentWearablesUpdate ([Legacy Bake]) builds one WearableData block per
+            // type holding the first item of that type, so this packet cannot describe a multi-layer
+            // type. Taken as the whole list it shrinks a type the server-side-baking outfit-folder
+            // handshake had filled: on Nimbus Grid (2026-10-15) nine Universal layers collapsed to one
+            // at a login where this packet landed after the handshake, and the collapse was saved and
+            // baked. A single listed item the agent does not wear yet still replaces the slot.
+            if (ids.Count == 1 && current != null && current.Count > 1 && Wears(current, ids[0]))
+            {
+                CopyItems(current, merged[i]);
+                continue;
+            }
+
+            // Listed slot: exactly the listed items. A type listed only with Zero has no ids and clears.
+            foreach (UUID itemID in ids)
+                merged[i].Add(itemID, current == null ? UUID.Zero : current.GetAsset(itemID));
         }
 
         changed = !SameItemIds(existing, merged);
         return merged;
+    }
+
+    private static void CopyItems(AvatarWearable from, AvatarWearable to)
+    {
+        if (from == null)
+            return;
+        for (int j = 0; j < from.Count; j++)
+            to.Add(from[j].ItemID, from[j].AssetID);
+    }
+
+    /// <summary>"Universal=3f62d5da, Tattoo=Zero" — every block of the packet in order: its type and the first eight hex of its item id.</summary>
+    private static string DescribeNowWearing(IEnumerable<AvatarWearingArgs.Wearable> nowWearing)
+    {
+        List<string> parts = new List<string>();
+        foreach (AvatarWearingArgs.Wearable wear in nowWearing)
+            parts.Add($"{(WearableType)wear.Type}={(wear.ItemID.IsZero() ? "Zero" : wear.ItemID.ToString().Substring(0, 8))}");
+        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+    }
+
+    /// <summary>"Shirt x2, Universal x9" — the worn types and how many of each, for the log.</summary>
+    private static string DescribeWearables(AvatarWearable[] wearables)
+    {
+        List<string> parts = new List<string>();
+        for (int type = 0; type < (wearables?.Length ?? 0); type++)
+        {
+            int count = wearables[type]?.Count ?? 0;
+            if (count == 0)
+                continue;
+            parts.Add(count == 1 ? $"{(WearableType)type}" : $"{(WearableType)type} x{count}");
+        }
+        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+    }
+
+    private static bool Wears(AvatarWearable wearable, UUID itemID)
+    {
+        for (int j = 0; j < wearable.Count; j++)
+        {
+            if (wearable[j].ItemID == itemID)
+                return true;
+        }
+        return false;
     }
 
     private static bool SameItemIds(AvatarWearable[] a, AvatarWearable[] b)

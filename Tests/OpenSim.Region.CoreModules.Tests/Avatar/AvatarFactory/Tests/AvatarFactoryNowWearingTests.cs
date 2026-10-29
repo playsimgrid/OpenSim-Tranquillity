@@ -45,6 +45,7 @@ public class AvatarFactoryNowWearingTests : OpenSimTestCase
     private const int Skin = (int)WearableType.Skin;
     private const int Hair = (int)WearableType.Hair;
     private const int Eyes = (int)WearableType.Eyes;
+    private const int Universal = 16; // AvatarWearable.UNIVERSAL; the multi-layer type in the grid trace
 
     private static readonly UUID ShapeItem = TestHelpers.ParseTail(0x10);
     private static readonly UUID SkinItem = TestHelpers.ParseTail(0x11);
@@ -83,6 +84,15 @@ public class AvatarFactoryNowWearingTests : OpenSimTestCase
 
     private static UUID ItemIn(ScenePresence sp, int type)
         => sp.Appearance.Wearables[type].Count == 0 ? UUID.Zero : sp.Appearance.Wearables[type][0].ItemID;
+
+    /// <summary>Body parts plus nine Universal layers (items 0x40.., assets 0x50..), as the grid avatar wears.</summary>
+    private static (AvatarFactoryModule afm, ScenePresence sp) SetupPresenceWearingNineUniversals()
+    {
+        (AvatarFactoryModule afm, ScenePresence sp) = SetupPresenceWearingBodyParts();
+        for (int n = 0; n < 9; n++)
+            sp.Appearance.Wearables[Universal].Add(TestHelpers.ParseTail(0x40 + n), TestHelpers.ParseTail(0x50 + n));
+        return (afm, sp);
+    }
 
     /// <summary>(a) Partial list: slots the viewer did not mention are retained.</summary>
     [Fact]
@@ -159,5 +169,56 @@ public class AvatarFactoryNowWearingTests : OpenSimTestCase
         ((TestClient)sp.ControllingClient).TriggerAvatarNowWearing(
             NowWearing((Shape, ShapeItem), (Skin, SkinItem), (Hair, HairItem), (Eyes, EyesItem)));
         Assert.Same(before, sp.Appearance.Wearables);
+    }
+
+    /// <summary>
+    /// (e) The legacy packet carries one item per type (Firestorm sends the first item of each), so a type
+    /// listed with one item the agent already wears among several keeps every layer, in order, with its
+    /// asset ids, and reports unchanged. Nine Universal layers collapsed to one on Nimbus Grid when this
+    /// packet landed after the server-side-baking outfit-folder handshake.
+    /// </summary>
+    [Fact]
+    public void OneWornItemInMultiLayerSlot_KeepsEveryLayer_AndReportsUnchanged()
+    {
+        TestHelpers.InMethod();
+        (AvatarFactoryModule _, ScenePresence sp) = SetupPresenceWearingNineUniversals();
+        AvatarWearable[] before = sp.Appearance.Wearables;
+
+        AvatarWearable[] merged = AvatarFactoryModule.MergeNowWearing(
+            before,
+            NowWearing((Universal, TestHelpers.ParseTail(0x40))).NowWearing,
+            out bool changed);
+
+        Assert.False(changed);
+        Assert.Equal(9, merged[Universal].Count);
+        for (int n = 0; n < 9; n++)
+        {
+            Assert.Equal(TestHelpers.ParseTail(0x40 + n), merged[Universal][n].ItemID);
+            Assert.Equal(TestHelpers.ParseTail(0x50 + n), merged[Universal][n].AssetID);
+        }
+
+        // And via the event path the stored array must be left untouched.
+        ((TestClient)sp.ControllingClient).TriggerAvatarNowWearing(
+            NowWearing((Universal, TestHelpers.ParseTail(0x40))));
+        Assert.Same(before, sp.Appearance.Wearables);
+    }
+
+    /// <summary>(f) One listed item the agent does not wear yet still replaces the slot (pre-rule behaviour, kept).</summary>
+    [Fact]
+    public void OneNewItemInMultiLayerSlot_ReplacesTheSlot()
+    {
+        TestHelpers.InMethod();
+        (AvatarFactoryModule _, ScenePresence sp) = SetupPresenceWearingNineUniversals();
+        UUID tenth = TestHelpers.ParseTail(0x49);
+
+        AvatarWearable[] merged = AvatarFactoryModule.MergeNowWearing(
+            sp.Appearance.Wearables,
+            NowWearing((Universal, tenth)).NowWearing,
+            out bool changed);
+
+        Assert.True(changed);
+        Assert.Equal(1, merged[Universal].Count);
+        Assert.Equal(tenth, merged[Universal][0].ItemID);
+        Assert.Equal(UUID.Zero, merged[Universal][0].AssetID);
     }
 }

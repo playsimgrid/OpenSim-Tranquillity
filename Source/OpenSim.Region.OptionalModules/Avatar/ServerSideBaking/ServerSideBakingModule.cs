@@ -105,6 +105,7 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         scene.EventManager.OnMakeRootAgent -= OnMakeRootAgent;
         scene.EventManager.OnRemovePresence -= region.Forget;
         scene.EventManager.OnAvatarAppearanceChange -= OnAvatarAppearanceChanged;
+        scene.EventManager.OnNewClient -= SubscribeLegacyWear;
     }
 
     /// <summary>This region's state, or null on a region the module has not finished loading.</summary>
@@ -141,6 +142,23 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
             scene.EventManager.OnMakeRootAgent += OnMakeRootAgent;
             scene.EventManager.OnRemovePresence += region.Forget;
             scene.EventManager.OnAvatarAppearanceChange += OnAvatarAppearanceChanged;
+
+            // The legacy AgentIsNowWearing packet. Firestorm's [Legacy Bake] code sends it at login and on every
+            // wear, remove and outfit change, one WearableData block per wearable type holding the type's first
+            // item, or a null id when the viewer wears nothing of that type: a packet sent while a type is empty
+            // clears it, and a packet sent while a type holds nine layers names one. The factory merges it into
+            // the wearable table (AvatarFactoryModule.Client_OnAvatarNowWearing), and on a region that bakes
+            // server-side that merge can undo what the Current Outfit folder says. A canary swap on 2026-10-16
+            // and two reproductions on 2026-10-27 by the grid's design owner left a nine-layer Universal type at
+            // one item; the 2026-10-28 trace showed how: the UpdateAvatarAppearance handshake read the folder and
+            // derived nine, then three packets arrived 510 ms later within one millisecond, taking the type to
+            // nine, to zero and back to one, and nothing read the folder again before the bake.
+            //
+            // The handler only notes the agent on the region state. The change bake that the packet's own
+            // appearance save causes re-reads the folder first (OnAvatarAppearanceChanged), so the read lands
+            // after the factory's merge whatever the order of the two handlers on the client event, and only for
+            // the events that send the packet.
+            scene.EventManager.OnNewClient += SubscribeLegacyWear;
             m_log.LogInformation(
                 "[SSB]: region {Region} has server-side baking ON: RegionProtocols bit 0 set, {Cap} advertised, "
                 + "login bake armed, appearances carry AppearanceData. Firestorm there will stop client-baking.",
@@ -186,90 +204,111 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         ArgumentNullException.ThrowIfNull(sp);
         if (sp.IsChildAgent) throw new InvalidOperationException($"{sp.Name} is a child agent here");
 
-        // A queued bake can outlive its presence. Logging out with an appearance save pending flushes that save
-        // (AvatarFactoryModule.FlushAppearanceSaveOnClose), which raises the change trigger; Scene.RemoveClient
-        // then disposes the presence, and ScenePresence.Dispose sets Appearance to null. So the appearance is read
-        // once, here, and the bake uses that object throughout.
-        var appearance = sp.Appearance;
-        if (appearance is null)
+        // One bake at a time per agent on this region (ServerSideBakingRegion.BakeGate). The orchestrator reads the
+        // bake index at the start of a run and writes it at the end, so a bake that ran beside another for the same
+        // agent compared its hashes with an index about to be replaced, composited every channel again and left
+        // the other bake's assets named by nothing; observed on a 2026-10-28 outfit swap, where the save the
+        // legacy-wear re-read queues fired five seconds into the change bake. Everything below the wait, the
+        // appearance read included, sees the table as it stands when this bake's turn comes. A presence this
+        // module has no region for bakes ungated, as before.
+        var gate = RegionOf(sp.Scene)?.BakeGate(sp.UUID);
+        DateTime? waitedFrom = gate is { CurrentCount: 0 } ? DateTime.UtcNow : null;
+        if (gate is not null) await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            m_log.LogDebug("[SSB]: bake for {Name} ({Agent}) reason={Reason} not run: the presence has closed", sp.Name, sp.UUID, reason);
-            return new BakeOutcome(sp.UUID, reason, Array.Empty<ChannelOutcome>(), 0);
-        }
+            if (waitedFrom is not null)
+                m_log.LogDebug("[SSB]: bake for {Name} reason={Reason} waited {Ms} ms for the agent's running bake",
+                    sp.Name, reason, (long)(DateTime.UtcNow - waitedFrom.Value).TotalMilliseconds);
 
-        var scene = sp.Scene;
-        var backend = Backend;
-
-        var cofVersion = CofVersionOf(scene, sp.UUID);
-        var region = RegionOf(scene);
-
-        // Step 0: refuse a bake whose wearable set has lost a body part since the last one. Composing from a
-        // set with no skin produces a valid-looking bake of nothing, and storing it supersedes - deletes - the
-        // good bakes it replaces, so the damage is not recoverable by baking again. Observed 2026-09-05: four
-        // unresolvable item ids emptied slots 1-4 and the CofChanged bake that followed stored 4 and superseded 4.
-        var refusal = region?.RefusalForBodyPartLoss(sp.UUID, appearance.Wearables);
-        if (refusal is not null)
-        {
-            m_log.LogWarning("[SSB]: bake for {Name} ({Agent}) reason={Reason} REFUSED: {Reason2}",
-                sp.Name, sp.UUID, reason, refusal);
-            return new BakeOutcome(sp.UUID, reason, Array.Empty<ChannelOutcome>(), 0);
-        }
-
-        // steps 2, 4-6, scene-free; the ADR-004 index in the avatar service is read for the reuse decision and
-        // written back at the end of the run
-        var outcome = await Task.Run(() => BakeOrchestrator.Run(sp.UUID, reason, appearance.Wearables, appearance.VisualParams, appearance,
-            scene.AssetService, scene.AvatarService, backend, m_compositor, BakeSize, cofVersion, ct), ct).ConfigureAwait(false);
-
-        // The presence can also close while the bake runs. The bake itself is kept: it is stored and its index
-        // written, which is where the next login's bake finds it. Nothing is written back, though: the region
-        // forgot the agent on close (ServerSideBakingRegion.Forget), and recording now would put back what that
-        // removed, for an agent that is no longer here. There is nobody to send to either.
-        var closed = sp.IsDeleted;
-        var live = outcome.Count(ChannelStatus.Baked) + outcome.Count(ChannelStatus.Reused) > 0;
-        if (closed)
-            m_log.LogDebug("[SSB]: bake for {Name} ({Agent}) reason={Reason}: the presence closed during the bake; stored, not recorded or sent",
-                sp.Name, sp.UUID, reason);
-
-        // Record the bake before sending: SendAppearanceToAgentNF asks IServerSideBakingRegion for the version,
-        // and an appearance sent before the record would go out without its AppearanceData block. RecordBake
-        // ignores the call on a flag-off region, which is what keeps a console bake there off the wire.
-        if (live && !closed)
-        {
-            region?.RecordBake(sp.UUID, cofVersion);
-            // The baseline for the next body-part check is what a bake actually succeeded from, never what one
-            // was refused for: recording a refused set would let the second attempt through unchallenged.
-            region?.RecordGoodBodyParts(sp.UUID, appearance.Wearables);
-        }
-
-        // step 7: send to everyone in view and to self. A reused channel is sent exactly like a fresh one — the
-        // reason for the bake may be that nobody has seen it yet.
-        //
-        // No QueueAppearanceSave here, deliberately. A bake changes only the baked faces of the TextureEntry, and
-        // the avatar service does not persist those at all: AvatarData(AvatarAppearance) carries the serial,
-        // height, wearables, visual params and attachments and nothing else (IAvatarService.cs:142-189). What a
-        // save would do is destroy this bake's index, because AvatarService.SetAvatar deletes every row for the
-        // agent before rewriting those keys (AvatarService.cs:93). The bake index written above IS the
-        // persistence of the baked faces.
-        if (live && !closed)
-        {
-            sp.SendAppearanceToAllOtherAgents();
-            sp.SendAppearanceToAgent(sp);
-        }
-
-        // step 8: one INFO line per bake, carrying the phase split (Ledger Q-10); the fidelity evidence at DEBUG
-        var t = outcome.Timings;
-        m_log.LogInformation("[SSB]: bake for {Name} ({Agent}) reason={Reason}: {Summary} in {Ms} ms [{Split}, other={Other} ms]",
-            sp.Name, sp.UUID, reason, Summarise(outcome), outcome.ElapsedMs, t.Summary,
-            Math.Max(0, outcome.ElapsedMs - (long)t.Accounted.TotalMilliseconds));
-        if (m_log.IsEnabled(LogLevel.Debug))
-            foreach (var c in outcome.Channels)
+            // A queued bake can outlive its presence. Logging out with an appearance save pending flushes that save
+            // (AvatarFactoryModule.FlushAppearanceSaveOnClose), which raises the change trigger; Scene.RemoveClient
+            // then disposes the presence, and ScenePresence.Dispose sets Appearance to null. So the appearance is read
+            // once, here, and the bake uses that object throughout.
+            var appearance = sp.Appearance;
+            if (appearance is null)
             {
-                if (c.Fidelity.Refusals.Count > 0) m_log.LogDebug("[SSB]: {Channel} refusals: {R}", c.Channel, string.Join("; ", c.Fidelity.Refusals));
-                if (c.Fidelity.MissingTextures.Count > 0) m_log.LogDebug("[SSB]: {Channel} missing textures: {T}", c.Channel, string.Join(", ", c.Fidelity.MissingTextures));
-                if (c.Fidelity.UnsupportedLayers.Count > 0) m_log.LogDebug("[SSB]: {Channel} unsupported layers: {L}", c.Channel, string.Join(" | ", c.Fidelity.UnsupportedLayers));
-                foreach (var note in c.Fidelity.Notes) m_log.LogDebug("[SSB]: {Channel} layer {Note}", c.Channel, note);
+                m_log.LogDebug("[SSB]: bake for {Name} ({Agent}) reason={Reason} not run: the presence has closed", sp.Name, sp.UUID, reason);
+                return new BakeOutcome(sp.UUID, reason, Array.Empty<ChannelOutcome>(), 0);
             }
-        return outcome;
+
+            var scene = sp.Scene;
+            var backend = Backend;
+
+            var cofVersion = CofVersionOf(scene, sp.UUID);
+            var region = RegionOf(scene);
+
+            // Step 0: refuse a bake whose wearable set has lost a body part since the last one. Composing from a
+            // set with no skin produces a valid-looking bake of nothing, and storing it supersedes - deletes - the
+            // good bakes it replaces, so the damage is not recoverable by baking again. Observed 2026-09-05: four
+            // unresolvable item ids emptied slots 1-4 and the CofChanged bake that followed stored 4 and superseded 4.
+            var refusal = region?.RefusalForBodyPartLoss(sp.UUID, appearance.Wearables);
+            if (refusal is not null)
+            {
+                m_log.LogWarning("[SSB]: bake for {Name} ({Agent}) reason={Reason} REFUSED: {Reason2}",
+                    sp.Name, sp.UUID, reason, refusal);
+                return new BakeOutcome(sp.UUID, reason, Array.Empty<ChannelOutcome>(), 0);
+            }
+
+            // steps 2, 4-6, scene-free; the ADR-004 index in the avatar service is read for the reuse decision and
+            // written back at the end of the run
+            var outcome = await Task.Run(() => BakeOrchestrator.Run(sp.UUID, reason, appearance.Wearables, appearance.VisualParams, appearance,
+                scene.AssetService, scene.AvatarService, backend, m_compositor, BakeSize, cofVersion, ct), ct).ConfigureAwait(false);
+
+            // The presence can also close while the bake runs. The bake itself is kept: it is stored and its index
+            // written, which is where the next login's bake finds it. Nothing is written back, though: the region
+            // forgot the agent on close (ServerSideBakingRegion.Forget), and recording now would put back what that
+            // removed, for an agent that is no longer here. There is nobody to send to either.
+            var closed = sp.IsDeleted;
+            var live = outcome.Count(ChannelStatus.Baked) + outcome.Count(ChannelStatus.Reused) > 0;
+            if (closed)
+                m_log.LogDebug("[SSB]: bake for {Name} ({Agent}) reason={Reason}: the presence closed during the bake; stored, not recorded or sent",
+                    sp.Name, sp.UUID, reason);
+
+            // Record the bake before sending: SendAppearanceToAgentNF asks IServerSideBakingRegion for the version,
+            // and an appearance sent before the record would go out without its AppearanceData block. RecordBake
+            // ignores the call on a flag-off region, which is what keeps a console bake there off the wire.
+            if (live && !closed)
+            {
+                region?.RecordBake(sp.UUID, cofVersion);
+                // The baseline for the next body-part check is what a bake actually succeeded from, never what one
+                // was refused for: recording a refused set would let the second attempt through unchallenged.
+                region?.RecordGoodBodyParts(sp.UUID, appearance.Wearables);
+            }
+
+            // step 7: send to everyone in view and to self. A reused channel is sent exactly like a fresh one — the
+            // reason for the bake may be that nobody has seen it yet.
+            //
+            // No QueueAppearanceSave here, deliberately. A bake changes only the baked faces of the TextureEntry, and
+            // the avatar service does not persist those at all: AvatarData(AvatarAppearance) carries the serial,
+            // height, wearables, visual params and attachments and nothing else (IAvatarService.cs:142-189). What a
+            // save would do is destroy this bake's index, because AvatarService.SetAvatar deletes every row for the
+            // agent before rewriting those keys (AvatarService.cs:93). The bake index written above IS the
+            // persistence of the baked faces.
+            if (live && !closed)
+            {
+                sp.SendAppearanceToAllOtherAgents();
+                sp.SendAppearanceToAgent(sp);
+            }
+
+            // step 8: one INFO line per bake, carrying the phase split (Ledger Q-10); the fidelity evidence at DEBUG
+            var t = outcome.Timings;
+            m_log.LogInformation("[SSB]: bake for {Name} ({Agent}) reason={Reason}: {Summary} in {Ms} ms [{Split}, other={Other} ms]",
+                sp.Name, sp.UUID, reason, Summarise(outcome), outcome.ElapsedMs, t.Summary,
+                Math.Max(0, outcome.ElapsedMs - (long)t.Accounted.TotalMilliseconds));
+            if (m_log.IsEnabled(LogLevel.Debug))
+                foreach (var c in outcome.Channels)
+                {
+                    if (c.Fidelity.Refusals.Count > 0) m_log.LogDebug("[SSB]: {Channel} refusals: {R}", c.Channel, string.Join("; ", c.Fidelity.Refusals));
+                    if (c.Fidelity.MissingTextures.Count > 0) m_log.LogDebug("[SSB]: {Channel} missing textures: {T}", c.Channel, string.Join(", ", c.Fidelity.MissingTextures));
+                    if (c.Fidelity.UnsupportedLayers.Count > 0) m_log.LogDebug("[SSB]: {Channel} unsupported layers: {L}", c.Channel, string.Join(" | ", c.Fidelity.UnsupportedLayers));
+                    foreach (var note in c.Fidelity.Notes) m_log.LogDebug("[SSB]: {Channel} layer {Note}", c.Channel, note);
+                }
+            return outcome;
+        }
+        finally
+        {
+            gate?.Release();
+        }
     }
 
     private static string Summarise(BakeOutcome o)
@@ -386,7 +425,14 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         // (llagentwearables.cpp:819-851), so nothing else turns a COF link into a wearable. Without this the save
         // below persists the wearables the sim already had and the bake reuses every channel, which is exactly
         // what was seen in practice: two shirts linked in the COF, one shirt in the Avatars record.
-        ApplyCofToWearables(scene, sp);
+        //
+        // And SAY so: an accepted handshake used to leave no line, so a Firestorm outfit swap that collapsed a
+        // nine-layer type (a canary on 2026-10-16, twice on 2026-10-27) could not be told from one where this read
+        // never ran. The line names what the read found, changed or not.
+        bool cofChanged = ApplyCofToWearables(scene, sp);
+        m_log.LogDebug("[SSB]: {Cap} for {Name}: cof_version {Client} accepted (server {Server}); COF read {Changed}: {Summary}",
+            CapName, sp.Name, clientVersion, serverVersion, cofChanged ? "changed" : "unchanged",
+            DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>()));
 
         // Instead the cap joins the same path the legacy route already takes: queue an appearance save, and let
         // the bake happen when that save completes (OnAvatarAppearanceChanged). Both signals therefore converge
@@ -409,45 +455,48 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
     /// lookup that failed.
     /// </para>
     /// </summary>
-    private static void ApplyCofToWearables(Scene scene, ScenePresence sp)
+    /// <returns>True when the read replaced the presence's wearables; false when it found no change or could not read.</returns>
+    private static bool ApplyCofToWearables(Scene scene, ScenePresence sp)
     {
         var inventory = scene?.InventoryService;
-        if (inventory is null || sp is null) return;
+        if (inventory is null || sp is null) return false;
 
         List<CofWearableLink> links;
+        var unresolved = new List<CofUnresolvedLink>();
         try
         {
             var cof = inventory.GetFolderForType(sp.UUID, FolderType.CurrentOutfit);
-            if (cof is null) return;
+            if (cof is null) return false;
             var content = inventory.GetFolderContent(sp.UUID, cof.ID);
-            if (content?.Items is null) return;
+            if (content?.Items is null) return false;
 
             links = new List<CofWearableLink>(content.Items.Count);
-            var unresolved = 0;
             foreach (var link in content.Items)
             {
-                if (link is null || link.AssetType != (int)AssetType.Link || link.AssetID.IsZero()) continue;
+                if (link is null || link.AssetType != (int)AssetType.Link) continue;
+                if (link.AssetID.IsZero()) { unresolved.Add(new CofUnresolvedLink(link.Description, link.InvType)); continue; }   // a link to nothing
                 var target = inventory.GetItem(sp.UUID, link.AssetID);
-                if (target is null) { unresolved++; continue; }
+                if (target is null) { unresolved.Add(new CofUnresolvedLink(link.Description, link.InvType)); continue; }
                 if (target.InvType != (int)InventoryType.Wearable) continue;   // an attachment or a gesture link
                 var type = (int)(target.Flags & 0xff);
-                if (type < 0 || type >= AvatarWearable.MAX_WEARABLES) { unresolved++; continue; }
+                if (type < 0 || type >= AvatarWearable.MAX_WEARABLES) { unresolved.Add(new CofUnresolvedLink(link.Description, (int)InventoryType.Wearable)); continue; }
                 links.Add(new CofWearableLink(link.ID, link.Description, target.ID, type, target.AssetID));
             }
-            if (unresolved > 0)
-                m_log.LogWarning("[SSB]: {Count} COF link(s) for {Name} name an item this region cannot resolve as a wearable; their types keep what the agent already wears (S8)", unresolved, sp.Name);
+            if (unresolved.Count > 0)
+                m_log.LogWarning("[SSB]: {Count} COF link(s) for {Name} name an item this region cannot resolve as a wearable; a type they name keeps what the agent wears, and without a readable type this read drops no clothing (S8)", unresolved.Count, sp.Name);
         }
         catch (Exception ex)
         {
             m_log.LogWarning(ex, "[SSB]: could not read the COF for {Name}; the wearables are left as they are", sp.Name);
-            return;
+            return false;
         }
 
-        var derived = CofWearables.Derive(sp.Appearance?.Wearables, links, out var changed);
-        if (!changed) return;
+        var derived = CofWearables.Derive(sp.Appearance?.Wearables, links, unresolved, out var changed);
+        if (!changed) return false;
 
         sp.Appearance.Wearables = derived;
         m_log.LogDebug("[SSB]: {Name}'s worn set from the COF: {Summary}", sp.Name, DescribeWearables(derived));
+        return true;
     }
 
     /// <summary>"Shirt x2, Pants" — the worn types and how many of each, for the log.</summary>
@@ -508,6 +557,13 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         {
             try
             {
+                // A legacy AgentIsNowWearing packet arrived since the last change bake (the subscription in
+                // RegionLoaded): its merge, which this save has just persisted, may have cleared or shrunk a type
+                // the Current Outfit folder still holds several items of. Read the folder again, after that merge
+                // and before the bake.
+                if (region.TakeLegacyWear(sp.UUID))
+                    RederiveAfterLegacyWear(scene, sp);
+
                 // BakeAsync sends the appearance itself when anything is live, reused included, so a change whose
                 // hashes all match still reaches the viewer — which it must, because the viewer is waiting for an
                 // AvatarAppearance it can accept and will not re-request one.
@@ -518,6 +574,50 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
                 m_log.LogError(ex, "[SSB]: change bake for {Name} threw", sp.Name);
             }
         }, null, "SSB change bake");
+    }
+
+    private void SubscribeLegacyWear(IClientAPI client)
+    {
+        if (client is not null) client.OnAvatarNowWearing += OnAvatarNowWearing;
+    }
+
+    /// <summary>The legacy packet's handler: note the agent, nothing more. The folder is read before the change bake.</summary>
+    private void OnAvatarNowWearing(IClientAPI client, AvatarWearingArgs e)
+    {
+        if (client?.Scene is not Scene scene) return;
+        RegionOf(scene)?.NoteLegacyWear(client.AgentId);
+    }
+
+    /// <summary>
+    /// The Current Outfit folder, read again before a change bake because a legacy wear packet arrived since the
+    /// last one. The one read this module already has (<see cref="ApplyCofToWearables"/>); with
+    /// <see cref="CofWearables.Derive"/> it is a complete statement of clothing, so a type the folder has no
+    /// link for stays cleared and a type it has nine links for comes back to nine. When the read changed the
+    /// table an appearance save is queued so the avatar record, persisted just before this trigger, catches up;
+    /// that save's own trigger bakes again five seconds on, and that bake reuses every channel because it waits
+    /// on the agent's bake gate until this one has finished and written its index
+    /// (<see cref="ServerSideBakingRegion.BakeGate"/>): without the wait it read the index first and composited
+    /// everything a second time.
+    ///
+    /// <para>A read that fails leaves the merged table as it is and the bake proceeds from it, as before this
+    /// method existed: <see cref="ApplyCofToWearables"/> warns and returns false on a folder it cannot read, and
+    /// anything else that throws is caught here so the bake is never skipped.</para>
+    /// </summary>
+    private void RederiveAfterLegacyWear(Scene scene, ScenePresence sp)
+    {
+        try
+        {
+            string before = DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>());
+            bool changed = ApplyCofToWearables(scene, sp);
+            m_log.LogDebug("[SSB]: COF re-read for {Name} after a legacy wear packet, before the change bake: {Changed}: {Before} → {After}",
+                sp.Name, changed ? "changed" : "unchanged", before,
+                DescribeWearables(sp.Appearance?.Wearables ?? Array.Empty<AvatarWearable>()));
+            if (changed) scene.AvatarFactory?.QueueAppearanceSave(sp.UUID);
+        }
+        catch (Exception ex)
+        {
+            m_log.LogWarning(ex, "[SSB]: COF re-read for {Name} after a legacy wear packet threw; the change bake proceeds from the merged table", sp.Name);
+        }
     }
 
     /// <summary>
@@ -537,6 +637,13 @@ public class ServerSideBakingModule : ISharedRegionModule, IServerSideBaker
         {
             try
             {
+                // On a login the circuit appearance comes from the login service, whose wearable table may cap
+                // a type (upstream's AvatarWearable.Add does at five), so the login bake takes its worn set from
+                // the Current Outfit folder, exactly as the UpdateAvatarAppearance handshake does. A teleport
+                // arrival carries the set from a region that already derived it and is not read.
+                if ((sp.TeleportFlags & Constants.TeleportFlags.ViaLogin) != 0)
+                    ApplyCofToWearables(scene, sp);
+
                 BakeAsync(sp, BakeReason.Login, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception ex)
