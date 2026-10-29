@@ -168,9 +168,23 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
             var typeface = SKTypeface.FromFamilyName(fontName, SKFontStyle.Normal);
             using (var font = new SKFont(typeface, fontSize))
             {
-                xSize = (int)font.MeasureText(text);
-                // For height, use the font metrics
-                ySize = (int)(font.Metrics.Descent - font.Metrics.Ascent);
+                // GDI+ MeasureString measured the whole block, newlines included. SKFont
+                // measures one run, so a multi-line string reported the width of every line
+                // laid end to end and the height of a single line. Scripts centre text with
+                // this, so the error moved the text as well as mis-sizing the texture.
+                string[] lines = SplitTextLines(text);
+                SKFontMetrics metrics = font.Metrics;
+
+                float widest = 0f;
+                foreach (string line in lines)
+                {
+                    float w = font.MeasureText(line);
+                    if (w > widest)
+                        widest = w;
+                }
+
+                xSize = (int)widest;
+                ySize = (int)(metrics.Descent - metrics.Ascent + (lines.Length - 1) * LineHeight(metrics));
             }
         }
     }
@@ -187,21 +201,176 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
             return new SKColor((uint)hex);
         }
         
-        // Try to parse named colors
-        switch (value.ToLower())
-        {
-            case "white": return SKColors.White;
-            case "black": return SKColors.Black;
-            case "red": return SKColors.Red;
-            case "green": return SKColors.Green;
-            case "blue": return SKColors.Blue;
-            case "yellow": return SKColors.Yellow;
-            case "cyan": return SKColors.Cyan;
-            case "magenta": return SKColors.Magenta;
-            case "gray": return SKColors.Gray;
-            default: return defaultColor;
-        }
+        return KnownColors.TryGetValue(value.Trim(), out uint argb) ? new SKColor(argb) : defaultColor;
     }
+
+    /// <summary>
+    /// The colour names a script may use, as GDI+ <c>Color.FromName</c> knew them.
+    /// </summary>
+    /// <remarks>
+    /// Stock OpenSimulator resolved pen and background colours with
+    /// <c>System.Drawing.Color.FromName</c>, which accepts the full HTML/X11 set. The
+    /// SkiaSharp port (#143) replaced it with a nine-case switch - white, black, red, green,
+    /// blue, yellow, cyan, magenta, gray - and everything else fell through to the default,
+    /// which at both call sites is black. So a script asking for Lime, Orange, Navy, Gold,
+    /// Silver, Teal, Pink or any of the other ~133 names drew in black, with no warning and
+    /// no error: on the usual black background, invisible.
+    ///
+    /// That is what the bug looked like from in world - a script that draws correctly on
+    /// every other grid producing an empty black rectangle here. Separately the text was also
+    /// being positioned off-canvas; see DrawTextBlock. Both had to be fixed to get the texture
+    /// back, and either alone still renders nothing.
+    ///
+    /// Generated from System.Drawing's KnownColor table (142 entries, system/UI colours
+    /// excluded) rather than hand-typed, and embedded rather than looked up at runtime so
+    /// this does not depend on System.Drawing being usable on the host.
+    /// </remarks>
+    private static readonly Dictionary<string, uint> KnownColors =
+        new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "transparent", 0x00FFFFFFu },
+            { "aliceblue", 0xFFF0F8FFu },
+            { "antiquewhite", 0xFFFAEBD7u },
+            { "aqua", 0xFF00FFFFu },
+            { "aquamarine", 0xFF7FFFD4u },
+            { "azure", 0xFFF0FFFFu },
+            { "beige", 0xFFF5F5DCu },
+            { "bisque", 0xFFFFE4C4u },
+            { "black", 0xFF000000u },
+            { "blanchedalmond", 0xFFFFEBCDu },
+            { "blue", 0xFF0000FFu },
+            { "blueviolet", 0xFF8A2BE2u },
+            { "brown", 0xFFA52A2Au },
+            { "burlywood", 0xFFDEB887u },
+            { "cadetblue", 0xFF5F9EA0u },
+            { "chartreuse", 0xFF7FFF00u },
+            { "chocolate", 0xFFD2691Eu },
+            { "coral", 0xFFFF7F50u },
+            { "cornflowerblue", 0xFF6495EDu },
+            { "cornsilk", 0xFFFFF8DCu },
+            { "crimson", 0xFFDC143Cu },
+            { "cyan", 0xFF00FFFFu },
+            { "darkblue", 0xFF00008Bu },
+            { "darkcyan", 0xFF008B8Bu },
+            { "darkgoldenrod", 0xFFB8860Bu },
+            { "darkgray", 0xFFA9A9A9u },
+            { "darkgreen", 0xFF006400u },
+            { "darkkhaki", 0xFFBDB76Bu },
+            { "darkmagenta", 0xFF8B008Bu },
+            { "darkolivegreen", 0xFF556B2Fu },
+            { "darkorange", 0xFFFF8C00u },
+            { "darkorchid", 0xFF9932CCu },
+            { "darkred", 0xFF8B0000u },
+            { "darksalmon", 0xFFE9967Au },
+            { "darkseagreen", 0xFF8FBC8Fu },
+            { "darkslateblue", 0xFF483D8Bu },
+            { "darkslategray", 0xFF2F4F4Fu },
+            { "darkturquoise", 0xFF00CED1u },
+            { "darkviolet", 0xFF9400D3u },
+            { "deeppink", 0xFFFF1493u },
+            { "deepskyblue", 0xFF00BFFFu },
+            { "dimgray", 0xFF696969u },
+            { "dodgerblue", 0xFF1E90FFu },
+            { "firebrick", 0xFFB22222u },
+            { "floralwhite", 0xFFFFFAF0u },
+            { "forestgreen", 0xFF228B22u },
+            { "fuchsia", 0xFFFF00FFu },
+            { "gainsboro", 0xFFDCDCDCu },
+            { "ghostwhite", 0xFFF8F8FFu },
+            { "gold", 0xFFFFD700u },
+            { "goldenrod", 0xFFDAA520u },
+            { "gray", 0xFF808080u },
+            { "green", 0xFF008000u },
+            { "greenyellow", 0xFFADFF2Fu },
+            { "honeydew", 0xFFF0FFF0u },
+            { "hotpink", 0xFFFF69B4u },
+            { "indianred", 0xFFCD5C5Cu },
+            { "indigo", 0xFF4B0082u },
+            { "ivory", 0xFFFFFFF0u },
+            { "khaki", 0xFFF0E68Cu },
+            { "lavender", 0xFFE6E6FAu },
+            { "lavenderblush", 0xFFFFF0F5u },
+            { "lawngreen", 0xFF7CFC00u },
+            { "lemonchiffon", 0xFFFFFACDu },
+            { "lightblue", 0xFFADD8E6u },
+            { "lightcoral", 0xFFF08080u },
+            { "lightcyan", 0xFFE0FFFFu },
+            { "lightgoldenrodyellow", 0xFFFAFAD2u },
+            { "lightgray", 0xFFD3D3D3u },
+            { "lightgreen", 0xFF90EE90u },
+            { "lightpink", 0xFFFFB6C1u },
+            { "lightsalmon", 0xFFFFA07Au },
+            { "lightseagreen", 0xFF20B2AAu },
+            { "lightskyblue", 0xFF87CEFAu },
+            { "lightslategray", 0xFF778899u },
+            { "lightsteelblue", 0xFFB0C4DEu },
+            { "lightyellow", 0xFFFFFFE0u },
+            { "lime", 0xFF00FF00u },
+            { "limegreen", 0xFF32CD32u },
+            { "linen", 0xFFFAF0E6u },
+            { "magenta", 0xFFFF00FFu },
+            { "maroon", 0xFF800000u },
+            { "mediumaquamarine", 0xFF66CDAAu },
+            { "mediumblue", 0xFF0000CDu },
+            { "mediumorchid", 0xFFBA55D3u },
+            { "mediumpurple", 0xFF9370DBu },
+            { "mediumseagreen", 0xFF3CB371u },
+            { "mediumslateblue", 0xFF7B68EEu },
+            { "mediumspringgreen", 0xFF00FA9Au },
+            { "mediumturquoise", 0xFF48D1CCu },
+            { "mediumvioletred", 0xFFC71585u },
+            { "midnightblue", 0xFF191970u },
+            { "mintcream", 0xFFF5FFFAu },
+            { "mistyrose", 0xFFFFE4E1u },
+            { "moccasin", 0xFFFFE4B5u },
+            { "navajowhite", 0xFFFFDEADu },
+            { "navy", 0xFF000080u },
+            { "oldlace", 0xFFFDF5E6u },
+            { "olive", 0xFF808000u },
+            { "olivedrab", 0xFF6B8E23u },
+            { "orange", 0xFFFFA500u },
+            { "orangered", 0xFFFF4500u },
+            { "orchid", 0xFFDA70D6u },
+            { "palegoldenrod", 0xFFEEE8AAu },
+            { "palegreen", 0xFF98FB98u },
+            { "paleturquoise", 0xFFAFEEEEu },
+            { "palevioletred", 0xFFDB7093u },
+            { "papayawhip", 0xFFFFEFD5u },
+            { "peachpuff", 0xFFFFDAB9u },
+            { "peru", 0xFFCD853Fu },
+            { "pink", 0xFFFFC0CBu },
+            { "plum", 0xFFDDA0DDu },
+            { "powderblue", 0xFFB0E0E6u },
+            { "purple", 0xFF800080u },
+            { "red", 0xFFFF0000u },
+            { "rosybrown", 0xFFBC8F8Fu },
+            { "royalblue", 0xFF4169E1u },
+            { "saddlebrown", 0xFF8B4513u },
+            { "salmon", 0xFFFA8072u },
+            { "sandybrown", 0xFFF4A460u },
+            { "seagreen", 0xFF2E8B57u },
+            { "seashell", 0xFFFFF5EEu },
+            { "sienna", 0xFFA0522Du },
+            { "silver", 0xFFC0C0C0u },
+            { "skyblue", 0xFF87CEEBu },
+            { "slateblue", 0xFF6A5ACDu },
+            { "slategray", 0xFF708090u },
+            { "snow", 0xFFFFFAFAu },
+            { "springgreen", 0xFF00FF7Fu },
+            { "steelblue", 0xFF4682B4u },
+            { "tan", 0xFFD2B48Cu },
+            { "teal", 0xFF008080u },
+            { "thistle", 0xFFD8BFD8u },
+            { "tomato", 0xFFFF6347u },
+            { "turquoise", 0xFF40E0D0u },
+            { "violet", 0xFFEE82EEu },
+            { "wheat", 0xFFF5DEB3u },
+            { "white", 0xFFFFFFFFu },
+            { "whitesmoke", 0xFFF5F5F5u },
+            { "yellow", 0xFFFFFF00u },
+            { "yellowgreen", 0xFF9ACD32u },
+            { "rebeccapurple", 0xFF663399u },
+        };
 
     #endregion
 
@@ -533,6 +702,62 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
     /// <returns></returns>
     /// <param name='data'></param>
     /// <param name='dataDelim'></param>
+    /// <summary>
+    /// Distance from one baseline to the next.
+    /// </summary>
+    private static float LineHeight(SKFontMetrics metrics)
+    {
+        return metrics.Descent - metrics.Ascent + metrics.Leading;
+    }
+
+    /// <summary>
+    /// Split on newlines the way GDI+ did, tolerating CRLF.
+    /// </summary>
+    private static string[] SplitTextLines(string text)
+    {
+        return text.Replace("\r\n", "\n").Split('\n', '\r');
+    }
+
+    /// <summary>
+    /// Draw text with <paramref name="top"/> as the TOP of the text box, splitting on
+    /// embedded newlines.
+    /// </summary>
+    /// <remarks>
+    /// This is what the pen position has always meant to a script. Stock OpenSimulator drew
+    /// this command with GDI+ <c>Graphics.DrawString(text, font, brush, point)</c>, where the
+    /// point is the upper-left corner of the text and the string is laid out line by line.
+    /// The SkiaSharp port (#143) swapped in <c>SKCanvas.DrawText</c>, which takes the
+    /// *baseline* and renders a single run, and kept the same coordinate - so the meaning of
+    /// every osDrawText changed without the call looking any different.
+    ///
+    /// Measured on a 1024x128 canvas with the pen at 10,6 and a 24pt font, drawing three
+    /// lines of text:
+    ///
+    ///   baseline at y, one run   1298 green px, 1 band, rows 0..6   (ascent is off-canvas,
+    ///                                                                only descenders show)
+    ///   top at y, one run        3561 green px, 1 band, rows 7..24  (the three lines collapse)
+    ///   top at y, split lines    3561 green px, 3 bands, rows 7..72 (what every other grid draws)
+    ///
+    /// Both halves are needed: fixing only the origin still renders the three lines on top
+    /// of one another as a single run.
+    ///
+    /// Note this moves existing text DOWN by the font's ascent. Content authored against the
+    /// broken behaviour - which could only ever have been authored here - will shift; content
+    /// authored anywhere else starts working.
+    /// </remarks>
+    private static void DrawTextBlock(SKCanvas canvas, string text, float left, float top, SKFont font, SKPaint paint)
+    {
+        SKFontMetrics metrics = font.Metrics;
+        float lineHeight = LineHeight(metrics);
+        float baseline = top - metrics.Ascent;   // Ascent is negative: this moves down from the top
+
+        foreach (string line in SplitTextLines(text))
+        {
+            canvas.DrawText(line, left, baseline, SKTextAlign.Left, font, paint);
+            baseline += lineHeight;
+        }
+    }
+
     private string[] GetLines(string data, char dataDelim)
     {
         char[] lineDelimiter = { dataDelim };
@@ -588,7 +813,7 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
                             Color = drawColor,
                             IsAntialias = true
                         };
-                        canvas.DrawText(nextLine, startPoint.X, startPoint.Y, SKTextAlign.Left, myFont, textPaint);
+                        DrawTextBlock(canvas, nextLine, startPoint.X, startPoint.Y, myFont, textPaint);
                         textPaint.Dispose();
                     }
                     continue;
@@ -663,8 +888,8 @@ public class VectorRenderModule : ISharedRegionModule, IDynamicTextureRender
                             Color = drawColor,
                             IsAntialias = true
                         };
-                        canvas.DrawText("URL couldn't be resolved or is", startPoint.X, startPoint.Y, SKTextAlign.Left, errorFont, errorPaint);
-                        canvas.DrawText("not an image. Please check URL.", startPoint.X, startPoint.Y + 12, SKTextAlign.Left, errorFont, errorPaint);
+                        DrawTextBlock(canvas, "URL couldn't be resolved or is", startPoint.X, startPoint.Y, errorFont, errorPaint);
+                        DrawTextBlock(canvas, "not an image. Please check URL.", startPoint.X, startPoint.Y + 12, errorFont, errorPaint);
                         errorPaint.Dispose();
                         errorFont.Dispose();
 
