@@ -103,6 +103,10 @@ public class HGFriendsService : IHGFriendsService
 
             m_FriendsSimConnector = new FriendsSimConnector();
 
+            // See the same call in UserAgentService: this half of Robust fans out through
+            // the connector too, and had no way to be configured.
+            FriendsSimConnector.ConfigureStatusNotify(config);
+
             m_log.DebugFormat("[HGFRIENDS SERVICE]: Starting...");
 
         }

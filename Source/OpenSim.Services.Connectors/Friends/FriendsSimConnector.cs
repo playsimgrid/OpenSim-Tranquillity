@@ -27,6 +27,7 @@
 
 using System.Collections.Concurrent;
 using System.Reflection;
+using Nini.Config;
 using GridRegion = OpenSim.Services.Interfaces.GridRegion;
 using OpenSim.Server.Base;
 using OpenSim.Framework;
@@ -53,8 +54,8 @@ public class FriendsSimConnector
     private static int m_StatusNotifyTimeoutSecs = 3;
 
     /// <summary>
-    /// How many status notification POSTs may be in flight at once, and how deep the queue in
-    /// front of them is allowed to get.
+    /// How many status notification POSTs may be in flight at once, and how much undelivered
+    /// state is allowed to pile up behind them.
     /// </summary>
     /// <remarks>
     /// The problem being fixed: every one of these POSTs is a BLOCKING request, and the fan-out
@@ -66,40 +67,123 @@ public class FriendsSimConnector
     /// is everything that needs a pool worker - logins, teleports, QUERYACCESS, the status
     /// page, even the watchdog tick. That is why it reads as a network or Robust fault.
     ///
-    /// Why a dedicated queue and dedicated threads rather than a semaphore around the
-    /// FireAndForget: a semaphore acquired BEFORE queueing bounds the rate of ISSUE, not the
-    /// number in flight, and those are not the same thing. FriendsModule.StatusNotify issues
-    /// the whole fan-out in a tight loop in a few milliseconds, long before the pool has
-    /// started any of the work items, so every permit is still held and almost the entire
-    /// fan-out gets dropped - measured at 184 of 200 dropped against a server replying in
-    /// 10ms, which is not a cap, it is a leak. A semaphore acquired AFTER queueing, inside the
-    /// work item, bounds the right number but makes each waiting item sit on a pool worker,
-    /// which is the disease.
+    /// Why dedicated threads rather than a semaphore around the FireAndForget: a semaphore
+    /// acquired BEFORE queueing bounds the rate of ISSUE, not the number in flight, and those
+    /// are not the same thing. FriendsModule.StatusNotify issues the whole fan-out in a tight
+    /// loop in a few milliseconds, long before the pool has started any of the work items, so
+    /// every permit is still held and almost the entire fan-out gets dropped - measured at 184
+    /// of 200 dropped against a server replying in 10ms, which is not a cap, it is a leak. A
+    /// semaphore acquired AFTER queueing, inside the work item, bounds the right number but
+    /// makes each waiting item sit on a pool worker, which is the disease.
     ///
-    /// So these calls come off the .NET pool altogether. m_Workers threads own the sockets,
-    /// the queue in front of them absorbs the burst, and issuing is a non-blocking enqueue.
-    /// Nothing is dropped until the queue itself is full, and a full queue means thousands of
-    /// notifications already waiting, at which point dropping is the only honest option left.
+    /// So these calls come off the .NET pool altogether. m_MaxConcurrentStatusNotifies threads
+    /// own the sockets and issuing is a non-blocking hand-off.
     /// Configurable as MaxConcurrentStatusNotifies and StatusNotifyQueueDepth in [Friends].
     /// </remarks>
     private static int m_MaxConcurrentStatusNotifies = 16;
 
     private static int m_StatusNotifyQueueDepth = 2000;
 
-    private static BlockingCollection<(string uri, string body)> m_StatusNotifyQueue;
+    /// <summary>
+    /// How many times one notification is attempted before it is abandoned.
+    /// </summary>
+    /// <remarks>
+    /// The short timeout above means a sim that is merely busy now fails a notification that
+    /// would have succeeded at 15s. Without a retry that is a permanently wrong friends list
+    /// for everyone who was looking, and it is a worse failure than the freeze it replaced:
+    /// silent, and persisting until the viewer relogs. Every loss path here used to be a
+    /// silent drop logged at Debug.
+    ///
+    /// Four attempts with the backoff below spans about 42 seconds. That number is chosen to
+    /// cover a region restart - roughly 35s on this estate - so a notification aimed at a sim
+    /// that is on its way back up survives the gap instead of disappearing into it.
+    /// Configurable as StatusNotifyMaxAttempts in [Friends].
+    /// </remarks>
+    private static int m_StatusNotifyMaxAttempts = 4;
+
+    private const int RETRY_BASE_MS = 2000;
+    private const int RETRY_FACTOR = 4;
+    private const int RETRY_CAP_MS = 60000;
+    private const int RETRY_SCAN_MS = 1000;
+
+    /// <summary>
+    /// The latest status we still owe one friend about one user.
+    /// </summary>
+    /// <remarks>
+    /// Keyed by (who changed, who is being told) and deliberately NOT by region or by message,
+    /// because what is being delivered is a fact about a person rather than a request. Two
+    /// consequences, both of them the point:
+    ///
+    /// A newer notification REPLACES an older undelivered one instead of queueing behind it.
+    /// Without that, adding a retry would make things worse, not better: someone who logs out
+    /// and straight back in would have the "offline" retried after the "online" had already
+    /// landed, leaving the friend looking at exactly the wrong answer with nothing further
+    /// coming to correct it. Ordering between independent senders was never guaranteed, so the
+    /// only thing it is safe to retry is the CURRENT STATE, never the message.
+    ///
+    /// And if the friend has changed region since the notification was raised, the replacement
+    /// carries the new URI, so a retry follows them instead of hammering the sim they left.
+    /// </remarks>
+    private sealed class PendingStatus
+    {
+        public string Uri;
+        public string Body;
+        public long Seq;
+        public int Attempts;
+        public long NextDueMS;
+        public bool Queued;
+    }
+
+    private static ConcurrentDictionary<string, PendingStatus> m_Pending;
+
+    /// <summary>Keys with state a sender should pick up now.</summary>
+    private static BlockingCollection<string> m_Ready;
+
+    private static long m_SeqCounter;
+    private static int m_PendingCount;
 
     private static readonly object m_StatusNotifyStartLock = new object();
 
     private static int m_StatusNotifiesShed;
+    private static int m_StatusNotifiesDelivered;
+    private static int m_StatusNotifiesRetried;
+    private static int m_StatusNotifiesAbandoned;
+    private static int m_StatusNotifiesSuperseded;
     private static long m_LastShedLogMS;
+    private static long m_LastAbandonLogMS;
 
     /// <summary>
-    /// Set the status-notification limits. Called once from the friends module at region
-    /// start; the Robust-side callers (UserAgentService, HGFriendsService) never call it and
-    /// run on the defaults above, which is intended - they fan out through this same code and
-    /// would starve the same way.
+    /// Apply the [Friends] section, wherever it lives.
     /// </summary>
-    public static void ConfigureStatusNotify(int timeoutSecs, int maxConcurrent, int queueDepth = 0)
+    /// <remarks>
+    /// Robust fans out status notifications through this same connector - UserAgentService and
+    /// HGFriendsService both construct one and call StatusNotify on the inbound hypergrid path
+    /// - but neither is a region module, so neither ever reached the region's configuration
+    /// call and both ran on whatever the defaults happened to be, with no way to change them
+    /// short of a rebuild. Both now call this with their own IConfigSource, so one [Friends]
+    /// section configures the senders wherever they are running.
+    /// </remarks>
+    public static void ConfigureStatusNotify(IConfigSource config)
+    {
+        ConfigureStatusNotify(config?.Configs["Friends"]);
+    }
+
+    public static void ConfigureStatusNotify(IConfig friendsConfig)
+    {
+        if (friendsConfig is null)
+        {
+            ConfigureStatusNotify(0, 0, 0, 0);
+            return;
+        }
+
+        ConfigureStatusNotify(
+            friendsConfig.GetInt("StatusNotifyTimeout", m_StatusNotifyTimeoutSecs),
+            friendsConfig.GetInt("MaxConcurrentStatusNotifies", m_MaxConcurrentStatusNotifies),
+            friendsConfig.GetInt("StatusNotifyQueueDepth", m_StatusNotifyQueueDepth),
+            friendsConfig.GetInt("StatusNotifyMaxAttempts", m_StatusNotifyMaxAttempts));
+    }
+
+    public static void ConfigureStatusNotify(int timeoutSecs, int maxConcurrent, int queueDepth = 0, int maxAttempts = 0)
     {
         lock (m_StatusNotifyStartLock)
         {
@@ -112,22 +196,26 @@ public class FriendsSimConnector
             if (maxConcurrent > 0)
                 m_MaxConcurrentStatusNotifies = maxConcurrent;
 
+            if (maxAttempts > 0)
+                m_StatusNotifyMaxAttempts = maxAttempts;
+
             // Only ever started once. Reconfiguring after the threads are up changes the
-            // timeout, which they read per request, but not their number - there is one
-            // process-wide dispatcher and restarting it mid-flight would abandon whatever is
-            // queued for no benefit.
-            if (m_StatusNotifyQueue is null)
+            // timeout and the attempt limit, which they read per request, but not their
+            // number - there is one process-wide dispatcher and restarting it mid-flight
+            // would abandon whatever is waiting for no benefit.
+            if (m_Ready is null)
                 StartStatusNotifyWorkers();
         }
 
         m_log.InfoFormat(
-            "[FRIENDS SIM CONNECTOR]: status notifications: {0} senders, queue depth {1}, {2}s timeout each",
-            m_MaxConcurrentStatusNotifies, m_StatusNotifyQueueDepth, m_StatusNotifyTimeoutSecs);
+            "[FRIENDS SIM CONNECTOR]: status notifications: {0} senders, queue depth {1}, {2}s timeout, up to {3} attempts each",
+            m_MaxConcurrentStatusNotifies, m_StatusNotifyQueueDepth, m_StatusNotifyTimeoutSecs, m_StatusNotifyMaxAttempts);
     }
 
     private static void StartStatusNotifyWorkers()
     {
-        m_StatusNotifyQueue = new BlockingCollection<(string uri, string body)>(m_StatusNotifyQueueDepth);
+        m_Pending = new ConcurrentDictionary<string, PendingStatus>();
+        m_Ready = new BlockingCollection<string>(m_StatusNotifyQueueDepth);
 
         for (int i = 0; i < m_MaxConcurrentStatusNotifies; i++)
         {
@@ -141,22 +229,157 @@ public class FriendsSimConnector
             };
             t.Start();
         }
+
+        Thread scanner = new Thread(StatusNotifyRetryScanner)
+        {
+            IsBackground = true,
+            Name = "FriendsStatusRetry",
+            Priority = ThreadPriority.BelowNormal
+        };
+        scanner.Start();
     }
 
     private static void StatusNotifyWorker()
     {
-        foreach ((string uri, string body) in m_StatusNotifyQueue.GetConsumingEnumerable())
+        foreach (string key in m_Ready.GetConsumingEnumerable())
         {
-            // Read per request on purpose, so a console or config change to the timeout takes
-            // effect without restarting the senders.
-            Post(uri, body, m_StatusNotifyTimeoutSecs);
+            if (!m_Pending.TryGetValue(key, out PendingStatus p))
+                continue;
+
+            string uri, body;
+            long seq;
+            lock (p)
+            {
+                p.Queued = false;
+                uri = p.Uri;
+                body = p.Body;
+                seq = p.Seq;
+            }
+
+            // Read per request on purpose, so a config change to the timeout takes effect
+            // without restarting the senders.
+            bool ok = Post(uri, body, m_StatusNotifyTimeoutSecs);
+
+            lock (p)
+            {
+                // Something newer arrived while this was in flight. Whatever this POST said
+                // is no longer the truth, and the newer state has already been queued, so
+                // leave the entry alone - success or failure both say nothing about it.
+                if (p.Seq != seq)
+                {
+                    Interlocked.Increment(ref m_StatusNotifiesSuperseded);
+                    continue;
+                }
+
+                if (ok)
+                {
+                    RemovePending(key);
+                    Interlocked.Increment(ref m_StatusNotifiesDelivered);
+                    continue;
+                }
+
+                p.Attempts++;
+                p.NextDueMS = Environment.TickCount64 + RetryDelayMS(p.Attempts);
+
+                if (p.Attempts < m_StatusNotifyMaxAttempts)
+                {
+                    // The scanner re-queues it when it falls due. Deliberately not retried
+                    // on this thread: a sender that sleeps through a backoff is a sender not
+                    // sending, exactly when the queue most needs draining.
+                    Interlocked.Increment(ref m_StatusNotifiesRetried);
+                    continue;
+                }
+
+                RemovePending(key);
+            }
+
+            int abandoned = Interlocked.Increment(ref m_StatusNotifiesAbandoned);
+            long nowMS = Environment.TickCount64;
+            if (nowMS - Volatile.Read(ref m_LastAbandonLogMS) > 60000)
+            {
+                Volatile.Write(ref m_LastAbandonLogMS, nowMS);
+                m_log.WarnFormat(
+                    "[FRIENDS SIM CONNECTOR]: gave up on a friends status notification to {0} after {1} attempts ({2} abandoned in total). That friend's list is now wrong until they relog.",
+                    uri, m_StatusNotifyMaxAttempts, abandoned);
+            }
         }
     }
 
-    /// <summary>
-    /// Number of status notifications dropped because the queue was full. Never reset.
-    /// </summary>
+    private static void StatusNotifyRetryScanner()
+    {
+        while (true)
+        {
+            Thread.Sleep(RETRY_SCAN_MS);
+
+            try
+            {
+                long now = Environment.TickCount64;
+
+                foreach (KeyValuePair<string, PendingStatus> kv in m_Pending)
+                {
+                    PendingStatus p = kv.Value;
+
+                    lock (p)
+                    {
+                        if (p.Queued || p.Attempts == 0 || p.NextDueMS > now)
+                            continue;
+
+                        p.Queued = true;
+                    }
+
+                    if (!m_Ready.TryAdd(kv.Key))
+                    {
+                        // No room right now; it stays due and the next scan tries again.
+                        lock (p)
+                        {
+                            p.Queued = false;
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                // This thread must not die: if it does, every failed notification stays
+                // pending forever and nothing retries.
+                m_log.WarnFormat("[FRIENDS SIM CONNECTOR]: status retry scan failed: {0}", e.Message);
+            }
+        }
+    }
+
+    private static int RetryDelayMS(int attempts)
+    {
+        long delay = RETRY_BASE_MS;
+
+        for (int i = 1; i < attempts; i++)
+        {
+            delay *= RETRY_FACTOR;
+            if (delay >= RETRY_CAP_MS)
+                return RETRY_CAP_MS;
+        }
+
+        return (int)delay;
+    }
+
+    private static void RemovePending(string key)
+    {
+        if (m_Pending.TryRemove(key, out _))
+            Interlocked.Decrement(ref m_PendingCount);
+    }
+
+    /// <summary>Status notifications refused outright because too much was already pending.</summary>
     public static int StatusNotifiesShed => Volatile.Read(ref m_StatusNotifiesShed);
+
+    /// <summary>Status notifications a far sim accepted.</summary>
+    public static int StatusNotifiesDelivered => Volatile.Read(ref m_StatusNotifiesDelivered);
+
+    /// <summary>Attempts that failed and were scheduled for another try.</summary>
+    public static int StatusNotifiesRetried => Volatile.Read(ref m_StatusNotifiesRetried);
+
+    /// <summary>Notifications abandoned after the last attempt failed. These are wrong friends lists.</summary>
+    public static int StatusNotifiesAbandoned => Volatile.Read(ref m_StatusNotifiesAbandoned);
+
+    /// <summary>Deliveries whose state was replaced before they finished. Not a failure.</summary>
+    public static int StatusNotifiesSuperseded => Volatile.Read(ref m_StatusNotifiesSuperseded);
 
     public static int MaxConcurrentStatusNotifies => m_MaxConcurrentStatusNotifies;
 
@@ -164,8 +387,10 @@ public class FriendsSimConnector
 
     public static int StatusNotifyTimeoutSecs => m_StatusNotifyTimeoutSecs;
 
-    /// <summary>How many notifications are waiting for a sender. For the status page.</summary>
-    public static int StatusNotifyQueued => m_StatusNotifyQueue?.Count ?? 0;
+    public static int StatusNotifyMaxAttempts => m_StatusNotifyMaxAttempts;
+
+    /// <summary>How much state is still undelivered. For the status page.</summary>
+    public static int StatusNotifyQueued => Volatile.Read(ref m_PendingCount);
 
     protected virtual string ServicePath()
     {
@@ -298,26 +523,75 @@ public class FriendsSimConnector
         if (uri is null)
             return false;
 
-        // Lazily start the senders for the callers that never configure them - the two Robust
-        // services construct a FriendsSimConnector directly and fan out through it.
-        if (m_StatusNotifyQueue is null)
+        // Lazily start the senders for the callers that never configure them.
+        if (m_Ready is null)
         {
             lock (m_StatusNotifyStartLock)
             {
-                if (m_StatusNotifyQueue is null)
+                if (m_Ready is null)
                     StartStatusNotifyWorkers();
             }
         }
 
-        string reqString = ServerUtils.BuildQueryString(sendData);
+        string body = ServerUtils.BuildQueryString(sendData);
+        string key = sendData["FromID"] + "|" + sendData["ToID"];
 
-        // TryAdd with no wait. Whichever thread we are on - a region thread on agent close, or
-        // a pool worker under FriendsModule.StatusChange - it must not end up waiting on a
-        // far sim, and with a queue this deep a refusal means something is badly wrong rather
-        // than merely busy.
-        if (m_StatusNotifyQueue.TryAdd((uri, reqString)))
+        if (!m_Pending.TryGetValue(key, out PendingStatus p))
+        {
+            // Soft cap, read without a lock on purpose: a couple of entries either side of
+            // the limit under a race costs nothing, and taking every bucket lock of a
+            // ConcurrentDictionary on each notification during a fan-out storm would cost
+            // rather a lot.
+            if (Volatile.Read(ref m_PendingCount) >= m_StatusNotifyQueueDepth)
+            {
+                Shed(uri);
+                return false;
+            }
+
+            p = new PendingStatus();
+            if (m_Pending.TryAdd(key, p))
+            {
+                Interlocked.Increment(ref m_PendingCount);
+            }
+            else if (!m_Pending.TryGetValue(key, out p))
+            {
+                // Lost the race and the winner has already been delivered and removed.
+                // Nothing to do: that delivery carried at least as new a state as this one.
+                return true;
+            }
+        }
+
+        lock (p)
+        {
+            p.Uri = uri;
+            p.Body = body;
+            p.Seq = Interlocked.Increment(ref m_SeqCounter);
+            p.Attempts = 0;
+            p.NextDueMS = 0;
+
+            // Already waiting for a sender. The sender reads the entry when it picks it up,
+            // so it will carry this state rather than the one it was queued for - which is
+            // the whole reason the queue holds keys and not messages.
+            if (p.Queued)
+                return true;
+
+            p.Queued = true;
+        }
+
+        if (m_Ready.TryAdd(key))
             return true;
 
+        lock (p)
+        {
+            p.Queued = false;
+        }
+
+        Shed(uri);
+        return false;
+    }
+
+    private static void Shed(string uri)
+    {
         int shed = Interlocked.Increment(ref m_StatusNotifiesShed);
 
         // Throttled to once a minute: one line says the queue is full as well as a thousand
@@ -327,11 +601,9 @@ public class FriendsSimConnector
         {
             Volatile.Write(ref m_LastShedLogMS, now);
             m_log.WarnFormat(
-                "[FRIENDS SIM CONNECTOR]: dropped a friends status notification to {0}: {1} already queued for {2} senders ({3} dropped in total). Online status elsewhere will lag until viewers refresh.",
+                "[FRIENDS SIM CONNECTOR]: dropped a friends status notification to {0}: {1} already pending for {2} senders ({3} dropped in total). Online status elsewhere will lag until viewers refresh.",
                 uri, m_StatusNotifyQueueDepth, m_MaxConcurrentStatusNotifies, shed);
         }
-
-        return false;
     }
 
     private string BuildUri(GridRegion region)
@@ -348,33 +620,41 @@ public class FriendsSimConnector
         return region.ServerURI + path;
     }
 
-    private static void Post(string uri, string reqString, int timeoutsecs)
+    /// <summary>
+    /// One POST. True when the far sim gave a well-formed answer, false when it gave none.
+    /// </summary>
+    /// <remarks>
+    /// The RESULT value is deliberately not examined. "false" is a definitive answer - that
+    /// friend is not on this sim - and retrying a definitive answer only burns the queue.
+    /// Only the ABSENCE of an answer is worth another attempt.
+    ///
+    /// This used to return void and swallow every failure at Debug level, which is how a
+    /// timed-out notification became an invisible event: the friends list was simply wrong
+    /// afterwards and nothing above Debug said why.
+    /// </remarks>
+    private static bool Post(string uri, string reqString, int timeoutsecs)
     {
-        // m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: calling {0}", uri);
         try
         {
             string reply = SynchronousRestFormsRequester.MakeRequest("POST", uri, reqString, timeoutsecs, null, false);
-            if (reply != string.Empty)
+
+            if (string.IsNullOrEmpty(reply))
             {
-                Dictionary<string, object> replyData = ServerUtils.ParseXmlResponse(reply);
-
-                if (replyData.ContainsKey("RESULT"))
-                {
-//                            if (replyData["RESULT"].ToString().ToLower() == "true")
-//                                return;
-//                            else
-                    return;
-                }
-                else
-                    m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: reply data does not contain result field");
-
+                m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: received empty reply from {0}", uri);
+                return false;
             }
-            else
-                m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: received empty reply");
+
+            Dictionary<string, object> replyData = ServerUtils.ParseXmlResponse(reply);
+            if (replyData.ContainsKey("RESULT"))
+                return true;
+
+            m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: reply from {0} has no result field", uri);
+            return false;
         }
         catch (Exception e)
         {
             m_log.DebugFormat("[FRIENDS SIM CONNECTOR]: Exception when contacting remote sim at {0}: {1}", uri, e.Message);
+            return false;
         }
     }
 }

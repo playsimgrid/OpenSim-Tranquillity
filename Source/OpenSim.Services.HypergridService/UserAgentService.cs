@@ -100,6 +100,11 @@ public class UserAgentService : UserAgentServiceBase, IUserAgentService
 
             m_FriendsSimConnector = new FriendsSimConnector();
 
+            // Robust fans status notifications out through the same connector the regions
+            // use, so it needs the same limits. It is not a region module, so the region's
+            // configuration call never reached it and it ran on the compiled-in defaults.
+            FriendsSimConnector.ConfigureStatusNotify(config);
+
             IConfig serverConfig = config.Configs["UserAgentService"];
             if (serverConfig is null)
                 throw new Exception(String.Format("No section UserAgentService in config file"));

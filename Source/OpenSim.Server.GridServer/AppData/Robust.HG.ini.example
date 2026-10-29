@@ -885,6 +885,22 @@
     ;MaxConcurrentLocates = 8
 
 
+[Friends]
+    ; Robust fans friends status notifications out to regions through the same
+    ; connector the regions themselves use - UserAgentService and HGFriendsService
+    ; both do it on the inbound hypergrid path. Until 1.0.49.9 neither could be
+    ; configured at all: they are not region modules, so the region's [Friends]
+    ; settings never reached them and they ran on the compiled-in defaults.
+    ;
+    ; These are the same four keys the regions take, with the same meanings and the
+    ; same defaults. Leave them alone unless this Robust is fanning out to a very
+    ; large number of regions.
+    ;
+    ;StatusNotifyTimeout = 3
+    ;MaxConcurrentStatusNotifies = 16
+    ;StatusNotifyQueueDepth = 2000
+    ;StatusNotifyMaxAttempts = 4
+
 [Messaging]
     ; OfflineIM
     OfflineIMService = "OpenSim.Addons.OfflineIM.dll:OfflineIMService"
