@@ -17,7 +17,9 @@ public interface ILog4NetBootstrapper
     string LogPath { get; set; }
     
     /// <summary>
-    /// Resolves the log4net config path using a configured path with fallback to a server default.
+    /// Resolves the log4net config path using a configured path with fallback to a server
+    /// default, and resolves a bare filename against the directory holding the assemblies
+    /// when the working directory does not hold it.
     /// </summary>
     string ResolveConfigPath(string configuredPath, string defaultPath);
 

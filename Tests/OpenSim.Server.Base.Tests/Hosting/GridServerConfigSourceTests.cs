@@ -19,8 +19,10 @@ namespace OpenSim.Server.Base.Tests.Hosting;
 /// expands <c>Include-*</c> directives, merges environment variables and resolves
 /// <c>${...}</c> key references. Mirrors the include-expansion coverage of the legacy
 /// <c>ConfigurationLoaderTests</c>. Includes are resolved relative to the current
-/// working directory, so each test runs inside an isolated temp directory.
+/// working directory, so each test runs inside an isolated temp directory - which puts this
+/// class in the WorkingDirectorySensitive collection alongside the others that move it.
 /// </summary>
+[Collection("WorkingDirectorySensitive")]
 public sealed class GridServerConfigSourceTests : IDisposable
 {
     private readonly string _basePath;
