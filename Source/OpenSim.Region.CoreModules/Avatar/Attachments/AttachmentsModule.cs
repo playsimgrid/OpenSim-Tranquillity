@@ -579,7 +579,13 @@ public class AttachmentsModule : IAttachmentsModule, INonSharedRegionModule
     }
 
     public bool AttachObject(IScenePresence sp, SceneObjectGroup group, uint attachmentPt, bool silent,
-                bool addToInventory, bool append, UUID experience, bool skipStorageDelete = false)
+                bool addToInventory, bool append, UUID experience)
+    {
+        return AttachObject(sp, group, attachmentPt, silent, addToInventory, append, experience, false);
+    }
+
+    public bool AttachObject(IScenePresence sp, SceneObjectGroup group, uint attachmentPt, bool silent,
+                bool addToInventory, bool append, UUID experience, bool skipStorageDelete)
     {
         if (!Enabled)
             return false;

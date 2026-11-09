@@ -3029,7 +3029,22 @@ public partial class Scene : SceneBase
     /// </summary>
     /// <param name="sceneObject"></param>
     /// <returns>True if the SceneObjectGroup was added, False if it was not</returns>
-    public bool AddSceneObject(SceneObjectGroup sceneObject, bool arrivingAttachment = false)
+    public bool AddSceneObject(SceneObjectGroup sceneObject)
+    {
+        return AddSceneObject(sceneObject, false);
+    }
+
+    /// <summary>
+    /// As AddSceneObject above.  arrivingAttachment is set only by
+    /// EntityTransferModule.HandleIncomingAttachments, for an attachment arriving with its
+    /// avatar; it skips a region-store delete that cannot match anything here.
+    /// </summary>
+    /// <remarks>
+    /// A separate overload rather than an optional parameter, for the same reason as
+    /// IAttachmentsModule.AttachObject: UploadObjectAssetModule, EntityTransferModule and
+    /// HGEntityTransferModule all call the one-argument form from other assemblies.
+    /// </remarks>
+    public bool AddSceneObject(SceneObjectGroup sceneObject, bool arrivingAttachment)
     {
         if (sceneObject.OwnerID.IsZero())
         {

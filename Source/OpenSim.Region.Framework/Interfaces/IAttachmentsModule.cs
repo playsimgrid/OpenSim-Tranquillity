@@ -98,7 +98,20 @@ public interface IAttachmentsModule
     /// </param>
     /// <returns>true if the object was successfully attached, false otherwise</returns>
     bool AttachObject(IScenePresence sp, SceneObjectGroup grp, uint AttachmentPt, bool silent,
-                bool addToInventory, bool append, UUID experience, bool skipStorageDelete = false);
+                bool addToInventory, bool append, UUID experience);
+
+    /// <summary>
+    /// As AttachObject above, for an attachment ARRIVING with its avatar.
+    /// </summary>
+    /// <remarks>
+    /// A separate overload rather than an optional parameter on purpose: the original
+    /// signature must keep existing, because callers in other assemblies - LSL_Api and
+    /// OSSL_Api - are bound to it, and an optional parameter changes the method's arity
+    /// rather than adding one. A piecemeal assembly swap would then fail at runtime with
+    /// MissingMethodException the first time a script called llAttachToAvatar.
+    /// </remarks>
+    bool AttachObject(IScenePresence sp, SceneObjectGroup grp, uint AttachmentPt, bool silent,
+                bool addToInventory, bool append, UUID experience, bool skipStorageDelete);
 
     /// <summary>
     /// Rez an attachment from user inventory and change inventory status to match.
