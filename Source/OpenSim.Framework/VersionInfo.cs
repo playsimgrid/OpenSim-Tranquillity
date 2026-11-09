@@ -39,9 +39,53 @@ public class VersionInfo
     public const string AssemblyVersionNumber = ThisAssembly.AssemblyFileVersion;
     public const string Configuration = ThisAssembly.AssemblyConfiguration;
 
+    /// <summary>
+    /// The release number as we number it, with whatever build metadata the informational
+    /// version carries.
+    /// </summary>
+    /// <remarks>
+    /// Nerdbank.GitVersioning renders AssemblyInformationalVersion from the first THREE
+    /// components of version.json plus the short commit id - "1.0.49+946836453c" - so the
+    /// fourth component, which is the only part that distinguishes one of our releases from
+    /// the next, never reached the string a resident can see. AssemblyFileVersion carries all
+    /// four. Compose the two: take the four-part number from the file version and carry over
+    /// the "+..." metadata the informational version appends, if it appends any.
+    ///
+    /// Both inputs are compile-time constants, so this cannot vary between assemblies in one
+    /// build; it is computed rather than declared const only because the splice is not a
+    /// constant expression.
+    /// </remarks>
+    public static readonly string FullVersionNumber =
+            ComposeVersionNumber(AssemblyVersionNumber, VersionNumber);
+
     public static string Version
     {
-        get { return GetVersionString(VersionNumber, Configuration); }
+        get { return GetVersionString(FullVersionNumber, Configuration); }
+    }
+
+    /// <summary>
+    /// Joins the four-part release number to the build metadata of a semver string.
+    /// </summary>
+    /// <param name="assemblyVersionNumber">Four-part number, e.g. "1.0.49.10".</param>
+    /// <param name="informationalVersion">
+    /// Semver string that may carry "+metadata", e.g. "1.0.49+946836453c".
+    /// </param>
+    /// <returns>
+    /// The four-part number with the metadata appended - "1.0.49.10+946836453c" - or the
+    /// four-part number alone when there is no metadata to carry.
+    /// </returns>
+    public static string ComposeVersionNumber(string assemblyVersionNumber, string informationalVersion)
+    {
+        if (string.IsNullOrEmpty(assemblyVersionNumber))
+            return informationalVersion ?? string.Empty;
+
+        if (string.IsNullOrEmpty(informationalVersion))
+            return assemblyVersionNumber;
+
+        int metadata = informationalVersion.IndexOf('+');
+        return metadata < 0
+                ? assemblyVersionNumber
+                : assemblyVersionNumber + informationalVersion.Substring(metadata);
     }
 
     public static string GetVersionString(string versionNumber, string configuration)

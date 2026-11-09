@@ -1,30 +1,3 @@
-/*
- * Copyright (c) Contributors, http://opensimulator.org/
- * See CONTRIBUTORS.TXT for a full list of copyright holders.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the OpenSimulator Project nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -35,10 +8,50 @@ namespace OpenSim.Framework.Servers.Tests
 {
     public class VersionInfoTests : OpenSimTestCase
     {
+        /// <summary>
+        /// VERSIONINFO_VERSION_LENGTH is the PadRight width, which is a floor and not a cap -
+        /// PadRight never truncates. The old assertion of exact equality held only by
+        /// coincidence: a Debug build landed on exactly 48 characters, while a Release build of
+        /// the same commit was already 50 and would have failed it. It never ran either way,
+        /// because this project is not in Tranquillity.sln.
+        /// </summary>
         [Fact]
-        public void TestVersionLength()
+        public void TestVersionIsAtLeastPaddedLength()
         {
-            Assert.Equal(VersionInfo.VERSIONINFO_VERSION_LENGTH, VersionInfo.Version.Length," VersionInfo.Version string not " + VersionInfo.VERSIONINFO_VERSION_LENGTH + " chars.");
+            Assert.True(
+                VersionInfo.Version.Length >= VersionInfo.VERSIONINFO_VERSION_LENGTH,
+                $"VersionInfo.Version is {VersionInfo.Version.Length} chars, shorter than the "
+                    + $"{VersionInfo.VERSIONINFO_VERSION_LENGTH}-char pad: '{VersionInfo.Version}'");
+        }
+
+        /// <summary>
+        /// The reported version string is what a resident sees in the viewer and what
+        /// `show version` prints, so it has to carry the number we release under - all four
+        /// components. Nerdbank.GitVersioning renders the informational version three-part plus
+        /// a short commit id, so reading the four-part number out of the assembly proves nothing
+        /// about this string: that is exactly the gap this asserts against.
+        /// </summary>
+        [Fact]
+        public void TestVersionCarriesTheFourPartReleaseNumber()
+        {
+            Assert.Equal(4, VersionInfo.AssemblyVersionNumber.Split('.').Length);
+
+            Assert.Contains(VersionInfo.AssemblyVersionNumber, VersionInfo.Version);
+        }
+
+        [Theory]
+        // Metadata present: the four-part number replaces the three-part one, metadata carried.
+        [InlineData("1.0.49.10", "1.0.49+946836453c", "1.0.49.10+946836453c")]
+        // No metadata to carry.
+        [InlineData("1.0.49.10", "1.0.49", "1.0.49.10")]
+        // Prerelease and metadata together - everything from '+' onwards is carried verbatim.
+        [InlineData("1.0.50.1", "1.0.50-beta+abcdef1234", "1.0.50.1+abcdef1234")]
+        // Degenerate inputs must not throw; the caller gets whatever is usable.
+        [InlineData("", "1.0.49+946836453c", "1.0.49+946836453c")]
+        [InlineData("1.0.49.10", "", "1.0.49.10")]
+        public void TestComposeVersionNumber(string assemblyVersionNumber, string informationalVersion, string expected)
+        {
+            Assert.Equal(expected, VersionInfo.ComposeVersionNumber(assemblyVersionNumber, informationalVersion));
         }
     }
 }
