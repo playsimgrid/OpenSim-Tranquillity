@@ -88,8 +88,9 @@ public interface IAttachmentsModule
     /// <param name="addToInventory">If true then add object to user inventory</param>
     /// <param name="append">Append to attachment point rather than replace.</param>
     /// <param name="skipStorageDelete">
-    /// Skip the region-store delete in AttachToAgent.  Only an attachment arriving from a
-    /// region crossing may set this: that object was never persisted in THIS region, so the
+    /// Skip the region-store delete in AttachToAgent.  Only an attachment ARRIVING with its
+    /// avatar may set this - from a region crossing or a teleport, both of which reach
+    /// HandleIncomingAttachments.  Such an object was never persisted in THIS region, so the
     /// delete is a no-op that still costs a database round trip per attachment.  An in-world
     /// object being worn (including llAttachToAvatar and llAttachToAvatarTemp) IS persisted
     /// here and must keep the delete, or it stays in the region store and re-rezzes as a

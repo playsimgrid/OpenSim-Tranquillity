@@ -1105,10 +1105,11 @@ public class AttachmentsModule : IAttachmentsModule, INonSharedRegionModule
                 so.Name, sp.Name, attachmentpoint, attachOffset, so.RootPart.AttachedPos, m_scene.Name);
 
         // Remove from database and parcel prim count.
-        // An attachment arriving from a region crossing was never persisted in this region, so
-        // this delete finds nothing - measured: 11 attachments, 11 SELECTs, 0 rows each, 8.3s
-        // of database round trips. Skip it for that caller only; every other caller is wearing
-        // an object that IS in this region's store and must still be removed from it.
+        // An attachment arriving with its avatar - by region crossing OR by teleport, both of
+        // which reach HandleIncomingAttachments - was never persisted in this region, so this
+        // delete finds nothing: measured 11 attachments, 11 SELECTs, 0 rows each, 8.3s of
+        // database round trips. Skip it for that caller only; every other caller is wearing an
+        // object that IS in this region's store and must still be removed from it.
         if (!skipStorageDelete)
             m_scene.DeleteFromStorage(so.UUID);
         m_scene.EventManager.TriggerParcelPrimCountTainted();

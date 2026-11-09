@@ -3029,7 +3029,7 @@ public partial class Scene : SceneBase
     /// </summary>
     /// <param name="sceneObject"></param>
     /// <returns>True if the SceneObjectGroup was added, False if it was not</returns>
-    public bool AddSceneObject(SceneObjectGroup sceneObject, bool fromCrossingAttachment = false)
+    public bool AddSceneObject(SceneObjectGroup sceneObject, bool arrivingAttachment = false)
     {
         if (sceneObject.OwnerID.IsZero())
         {
@@ -3083,7 +3083,7 @@ public partial class Scene : SceneBase
                 bool attached = false;
                 if (AttachmentsModule is not null)
                     attached = AttachmentsModule.AttachObject(sp, grp, 0, false, false, true, UUID.Zero,
-                            fromCrossingAttachment);
+                            arrivingAttachment);
 
                 if (attached)
                     RootPrim.RemFlag(PrimFlags.TemporaryOnRez);
