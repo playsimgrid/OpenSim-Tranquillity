@@ -3029,7 +3029,7 @@ public partial class Scene : SceneBase
     /// </summary>
     /// <param name="sceneObject"></param>
     /// <returns>True if the SceneObjectGroup was added, False if it was not</returns>
-    public bool AddSceneObject(SceneObjectGroup sceneObject)
+    public bool AddSceneObject(SceneObjectGroup sceneObject, bool fromCrossingAttachment = false)
     {
         if (sceneObject.OwnerID.IsZero())
         {
@@ -3082,7 +3082,8 @@ public partial class Scene : SceneBase
                 // We currently do this in Scene.MakeRootAgent() instead.
                 bool attached = false;
                 if (AttachmentsModule is not null)
-                    attached = AttachmentsModule.AttachObject(sp, grp, 0, false, false, true, UUID.Zero);
+                    attached = AttachmentsModule.AttachObject(sp, grp, 0, false, false, true, UUID.Zero,
+                            fromCrossingAttachment);
 
                 if (attached)
                     RootPrim.RemFlag(PrimFlags.TemporaryOnRez);

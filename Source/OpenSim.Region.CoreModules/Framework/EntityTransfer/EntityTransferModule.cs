@@ -2845,7 +2845,7 @@ public class EntityTransferModule : INonSharedRegionModule, IEntityTransferModul
 
         foreach(SceneObjectGroup so in attachments)
         {
-            if (!m_scene.AddSceneObject(so))
+            if (!m_scene.AddSceneObject(so, true))
             {
                 m_log.DebugFormat(
                     "[ENTITY TRANSFER MODULE]: Problem adding attachment {0} {1} into {2} ",
