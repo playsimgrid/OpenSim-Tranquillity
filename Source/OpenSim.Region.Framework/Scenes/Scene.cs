@@ -4191,6 +4191,27 @@ public partial class Scene : SceneBase
         // TODO: can we remove this lock?
         lock (m_newUserConnLock)
         {
+            sp = GetScenePresence(acd.AgentID);
+            if (sp is not null && !sp.IsDeleted && sp.IsChildAgent
+                && sp.ControllingClient is not null
+                && (sp.ControllingClient.SessionId != acd.SessionID
+                    || sp.ControllingClient.SecureSessionId != acd.SecureSessionID
+                    || sp.ControllingClient.CircuitCode != acd.circuitcode))
+            {
+                // A neighbor can retain a child from a failed crossing or a disconnected viewer.
+                // Retire it BEFORE installing the new circuit/caps. Otherwise AddClient closes the
+                // old client after AddNewCircuit, and RemoveClient deletes the new login by UUID.
+                m_log.Info($"[SCENE]: Retiring stale child session for {sp.Name} in {Name} before reconnect");
+                sp.DoNotCloseAfterTeleport = false; // this lease belongs to the previous login
+                CloseAgent(sp.UUID, true);
+                sp = GetScenePresence(acd.AgentID);
+                if (sp is not null && !sp.IsDeleted)
+                {
+                    reason = "Previous child session is still closing; retry the connection";
+                    return false;
+                }
+            }
+
             if(sp is not null && sp.IsDeleted)
                 sp = null; 
 

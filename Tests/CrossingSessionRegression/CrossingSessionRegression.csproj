@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../Source/OpenSim.Region.Framework/OpenSim.Region.Framework.csproj" /></ItemGroup>
+  <ItemGroup><Content Include="../../Source/OpenSim.Server.RegionServer/AppData/data/avataranimations.xml" Link="data/avataranimations.xml" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

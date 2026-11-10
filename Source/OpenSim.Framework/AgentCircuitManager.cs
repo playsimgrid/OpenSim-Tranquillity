@@ -25,7 +25,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-using System.Runtime.InteropServices;
 using OpenMetaverse;
 
 namespace OpenSim.Framework;
@@ -85,25 +84,32 @@ public class AgentCircuitManager
     public virtual void AddNewCircuit(AgentCircuitData agentData)
     {
         agentData.child = true;
-        lock (m_lock)
-        {
-            ref AgentCircuitData acd = ref CollectionsMarshal.GetValueRefOrAddDefault(m_agentCircuits, agentData.circuitcode, out bool existed);
-            if (existed && acd is not null && acd.AgentID.NotEqual(agentData.AgentID))
-                m_agentCircuitsByUUID.Remove(acd.AgentID);
-            acd = agentData;
-            m_agentCircuitsByUUID[agentData.AgentID] = agentData;
-        }
+        AddCircuit(agentData);
     }
 
     public virtual void AddNewCircuit(uint circuitCode, AgentCircuitData agentData)
     {
         agentData.circuitcode = circuitCode;
+        AddCircuit(agentData);
+    }
+
+    private void AddCircuit(AgentCircuitData agentData)
+    {
         lock (m_lock)
         {
-            ref AgentCircuitData acd = ref CollectionsMarshal.GetValueRefOrAddDefault(m_agentCircuits, agentData.circuitcode, out bool existed);
-            if (existed && acd is not null && acd.AgentID.NotEqual(agentData.AgentID))
-                m_agentCircuitsByUUID.Remove(acd.AgentID);
-            acd = agentData;
+            // A relogin replaces the avatar's circuit, including the old code index.
+            // Leaving the old code authorized also lets its eventual cleanup erase the new login.
+            if (m_agentCircuitsByUUID.TryGetValue(agentData.AgentID, out AgentCircuitData previous)
+                && previous.circuitcode != agentData.circuitcode)
+                m_agentCircuits.Remove(previous.circuitcode);
+
+            if (m_agentCircuits.TryGetValue(agentData.circuitcode, out AgentCircuitData displaced)
+                && displaced.AgentID != agentData.AgentID
+                && m_agentCircuitsByUUID.TryGetValue(displaced.AgentID, out AgentCircuitData current)
+                && ReferenceEquals(current, displaced))
+                m_agentCircuitsByUUID.Remove(displaced.AgentID);
+
+            m_agentCircuits[agentData.circuitcode] = agentData;
             m_agentCircuitsByUUID[agentData.AgentID] = agentData;
         }
     }
@@ -112,7 +118,9 @@ public class AgentCircuitManager
     {
         lock (m_lock)
         {
-            if (m_agentCircuits.Remove(circuitCode, out AgentCircuitData ac))
+            if (m_agentCircuits.Remove(circuitCode, out AgentCircuitData ac)
+                && m_agentCircuitsByUUID.TryGetValue(ac.AgentID, out AgentCircuitData current)
+                && SameSession(current, ac))
                 m_agentCircuitsByUUID.Remove(ac.AgentID);
         }
     }
@@ -130,13 +138,20 @@ public class AgentCircuitManager
     {
         lock (m_lock)
         {
-            if (m_agentCircuitsByUUID.Remove(ac.AgentID, out AgentCircuitData byuuid))
-            {
-                if (byuuid.circuitcode != ac.circuitcode)
-                    m_agentCircuits.Remove(byuuid.circuitcode);
-            }
-            m_agentCircuits.Remove(ac.circuitcode);
+            // A delayed cleanup belongs to a particular login, not every login of this avatar.
+            if (m_agentCircuitsByUUID.TryGetValue(ac.AgentID, out AgentCircuitData byuuid)
+                && SameSession(byuuid, ac))
+                m_agentCircuitsByUUID.Remove(ac.AgentID);
+            if (m_agentCircuits.TryGetValue(ac.circuitcode, out AgentCircuitData bycode)
+                && SameSession(bycode, ac))
+                m_agentCircuits.Remove(ac.circuitcode);
         }
+    }
+
+    private static bool SameSession(AgentCircuitData first, AgentCircuitData second)
+    {
+        return first.AgentID == second.AgentID && first.circuitcode == second.circuitcode
+            && first.SessionID == second.SessionID && first.SecureSessionID == second.SecureSessionID;
     }
 
     public AgentCircuitData GetAgentCircuitData(uint circuitCode)
