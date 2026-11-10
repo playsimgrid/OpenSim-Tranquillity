@@ -122,7 +122,7 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
 
             scene.AddCommand(
                 "Archiving", this, "save iar",
-                "save iar [-h|--home=<url>] [--noassets | --skipbadassets] <first> <last> <inventory path> <password> [<IAR path>] [-c|--creators] [-e|--exclude=<name/uuid>] [-f|--excludefolder=<foldername/uuid>] [-v|--verbose]",
+                "save iar [-h|--home=<url>] [--noassets | --skipbadassets] <first> <last> <inventory path> [<IAR path>] [-c|--creators] [-e|--exclude=<name/uuid>] [-f|--excludefolder=<foldername/uuid>] [-v|--verbose]",
                 "Save user inventory archive (IAR).",
                 "<first> is the user's first name.\n"
                 + "<last> is the user's last name.\n"
@@ -137,7 +137,9 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
                 + "--noassets stops assets being saved to the IAR."
                 + "--skipbadassets skips inventory items when their main asset is missing. Avoid to use unless tring to recover a already very damaged inventory"
                 + "--perm=<permissions> stops items with insufficient permissions from being saved to the IAR.\n"
-                + "   <permissions> can contain one or more of these characters: \"C\" = Copy, \"T\" = Transfer, \"M\" = Modify.\n",
+                + "   <permissions> can contain one or more of these characters: \"C\" = Copy, \"T\" = Transfer, \"M\" = Modify.\n"
+                + "This command takes no <password>: reaching this console already proves more than\n"
+                + "an avatar's password would.  'load iar' is unchanged and still requires one.\n",
                 HandleSaveInvConsoleCommand);
 
             m_aScene = scene;
@@ -247,41 +249,47 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
 //            if (!ConsoleUtil.CheckFileDoesNotExist(MainConsole.Instance, savePath))
 //                return false;
 
-        if (m_scenes.Count > 0)
+        if (m_scenes.Count == 0)
+            return false;
+
+        return ArchiveInventory(id, GetUserInfo(firstName, lastName, pass), invPath, savePath, options);
+    }
+
+    /// <summary>
+    /// Write an IAR for an account that has already been resolved.
+    /// </summary>
+    /// <remarks>
+    /// The bytes written are identical to those the password-taking overloads produce: the
+    /// password never reached the archive, only the gate in front of it.  The gate is kept on
+    /// the public IInventoryArchiverModule methods, where the caller is remote; the server
+    /// console uses this one, because reaching that console already proves more than an
+    /// avatar's password would.
+    /// </remarks>
+    /// <param name="userInfo">May be null, in which case nothing is written.</param>
+    private bool ArchiveInventory(
+        UUID id, UserAccount userInfo, string invPath, string savePath,
+        Dictionary<string, object> options)
+    {
+        if (m_scenes.Count == 0 || userInfo == null)
+            return false;
+
+        try
         {
-            UserAccount userInfo = GetUserInfo(firstName, lastName, pass);
+            InventoryArchiveWriteRequest iarReq
+                = new InventoryArchiveWriteRequest(id, this, m_aScene, userInfo, invPath, savePath);
+            iarReq.Execute(options, UserAccountService);
+        }
+        catch (EntryPointNotFoundException e)
+        {
+            m_log.ErrorFormat(
+                "[INVENTORY ARCHIVER]: Mismatch between Mono and zlib1g library version when trying to create compression stream."
+                    + "If you've manually installed Mono, have you appropriately updated zlib1g as well?");
+            m_log.Error(e);
 
-            if (userInfo != null)
-            {
-//                    if (CheckPresence(userInfo.PrincipalID))
-//                    {
-                    try
-                    {
-                        InventoryArchiveWriteRequest iarReq  = new InventoryArchiveWriteRequest(id, this, m_aScene, userInfo, invPath, savePath);
-                        iarReq.Execute(options, UserAccountService);
-                    }
-                    catch (EntryPointNotFoundException e)
-                    {
-                        m_log.ErrorFormat(
-                            "[INVENTORY ARCHIVER]: Mismatch between Mono and zlib1g library version when trying to create compression stream."
-                                + "If you've manually installed Mono, have you appropriately updated zlib1g as well?");
-                        m_log.Error(e);
-
-                        return false;
-                    }
-
-                    return true;
-//                    }
-//                    else
-//                    {
-//                        m_log.ErrorFormat(
-//                            "[INVENTORY ARCHIVER]: User {0} {1} {2} not logged in to this region simulator",
-//                            userInfo.FirstName, userInfo.LastName, userInfo.PrincipalID);
-//                    }
-            }
+            return false;
         }
 
-        return false;
+        return true;
     }
 
     public bool DearchiveInventory(UUID id, string firstName, string lastName, string invPath, string pass, Stream loadStream)
@@ -460,10 +468,22 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
 
         try
         {
-            if (mainParams.Count < 6)
+            // "save" "iar" <first> <last> <inventory path> [<IAR path>] -- five or six.
+            // The <password> argument this command used to take has been removed.
+            if (mainParams.Count < 5)
             {
+                m_log.Error("[INVENTORY ARCHIVER]: save iar [-h|--home=<url>] [--noassets | --skipbadassets] <first> <last> <inventory path> [<IAR path>] [-c|--creators] [-e|--exclude=<name/uuid>] [-f|--excludefolder=<foldername/uuid>] [-v|--verbose]");
+                return;
+            }
+
+            if (mainParams.Count > 6)
+            {
+                // Almost certainly the old six-argument form with a password in it.  Refusing
+                // is the only safe answer: carrying on would silently treat the password as
+                // the IAR path and write the archive somewhere nobody asked for.
                 m_log.Error(
-                    "[INVENTORY ARCHIVER]: save iar [-h|--home=<url>] [--noassets | --skipbadassets] <first> <last> <inventory path> <password> [<IAR path>] [-c|--creators] [-e|--exclude=<name/uuid>] [-f|--excludefolder=<foldername/uuid>] [-v|--verbose]");
+                    "[INVENTORY ARCHIVER]: too many arguments to 'save iar'.  The <password> argument has been removed; drop it.");
+                m_log.Error("[INVENTORY ARCHIVER]: save iar [-h|--home=<url>] [--noassets | --skipbadassets] <first> <last> <inventory path> [<IAR path>] [-c|--creators] [-e|--exclude=<name/uuid>] [-f|--excludefolder=<foldername/uuid>] [-v|--verbose]");
                 return;
             }
 
@@ -473,8 +493,20 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
             string firstName = mainParams[2];
             string lastName = mainParams[3];
             string invPath = mainParams[4];
-            string pass = mainParams[5];
-            string savePath = (mainParams.Count > 6 ? mainParams[6] : DEFAULT_INV_BACKUP_FILENAME);
+            string savePath = (mainParams.Count > 5 ? mainParams[5] : DEFAULT_INV_BACKUP_FILENAME);
+
+            // Six arguments is ambiguous: it is the new form with an IAR path, but it is also
+            // the old form with a password and no path.  We cannot tell, so we take it as the
+            // path and say so, rather than writing a file named after someone's password
+            // without comment.
+            if (mainParams.Count > 5
+                && savePath.IndexOf('/') < 0 && savePath.IndexOf('\\') < 0 && savePath.IndexOf('.') < 0)
+            {
+                m_log.WarnFormat(
+                    "[INVENTORY ARCHIVER]: Using \"{0}\" as the IAR filename.  If you meant it as a password,"
+                        + " note that 'save iar' no longer takes one - press ctrl-c and re-run without it.",
+                    savePath);
+            }
 
             m_log.InfoFormat(
                 "[INVENTORY ARCHIVER]: Saving archive {0} using inventory path {1} for {2} {3}",
@@ -483,7 +515,7 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
             lock (m_pendingConsoleTasks)
                 m_pendingConsoleTasks.Add(id);
 
-            ArchiveInventory(id, firstName, lastName, invPath, pass, savePath, options);
+            ArchiveInventory(id, GetUserInfo(firstName, lastName), invPath, savePath, options);
         }
         catch (InventoryArchiverException e)
         {
@@ -544,13 +576,10 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
     }
 
     /// <summary>
-    /// Get user information for the given name.
+    /// Look up an account by name, with no password check.
     /// </summary>
-    /// <param name="firstName"></param>
-    /// <param name="lastName"></param>
-    /// <param name="pass">User password</param>
-    /// <returns></returns>
-    protected UserAccount GetUserInfo(string firstName, string lastName, string pass)
+    /// <returns>null if no such account exists, having logged the failure.</returns>
+    protected UserAccount GetUserInfo(string firstName, string lastName)
     {
         UserAccount account
             = m_aScene.UserAccountService.GetUserAccount(m_aScene.RegionInfo.ScopeID, firstName, lastName);
@@ -560,8 +589,24 @@ public class InventoryArchiverModule : ISharedRegionModule, IInventoryArchiverMo
             m_log.ErrorFormat(
                 "[INVENTORY ARCHIVER]: Failed to find user info for {0} {1}",
                 firstName, lastName);
-            return null;
         }
+
+        return account;
+    }
+
+    /// <summary>
+    /// Get user information for the given name, checking the password.
+    /// </summary>
+    /// <param name="firstName"></param>
+    /// <param name="lastName"></param>
+    /// <param name="pass">User password</param>
+    /// <returns></returns>
+    protected UserAccount GetUserInfo(string firstName, string lastName, string pass)
+    {
+        UserAccount account = GetUserInfo(firstName, lastName);
+
+        if (null == account)
+            return null;
 
         try
         {
