@@ -1,0 +1,49 @@
+; Optional S3 asset backend for PlaySim 1.0.49.10.
+; Merge into a SEPARATE canary ROBUST configuration. Not auto-enabled.
+; ReadOnly=true rejects uploads: do not replace a production writer with this example.
+
+[AssetService]
+    LocalServiceModule = "OpenSim.Services.S3AssetService.dll:S3AssetService"
+    ; Retain your existing StorageProvider/ConnectionString (or DatabaseService defaults).
+    Realm = fsassets
+    DaysBetweenAccessTimeUpdates = 30
+    UseOsgridFormat = false
+    ; Retain the existing legacy database fallback if still needed:
+    ; FallbackService = "OpenSim.Services.AssetService.dll:AssetService"
+
+[HGAssetService]
+    LocalServiceModule = "OpenSim.Services.HypergridService.dll:HGAssetService"
+    BackingService = "OpenSim.Services.S3AssetService.dll:S3AssetService"
+    ; Preserve existing UserAccountsService, HomeURI, DisallowImport and DisallowExport.
+
+[S3AssetService]
+    ; R2: use the account endpoint and Region=auto.
+    Endpoint = "https://ACCOUNT_ID.r2.cloudflarestorage.com"
+    Region = auto
+    ; B2: use the exact endpoint/region shown on your bucket, for example:
+    ; Endpoint = "https://s3.us-west-004.backblazeb2.com"
+    ; Region = us-west-004
+    Bucket = "playsim-assets-canary"
+    ; Existing FS relative paths go below this prefix. Empty means bucket root.
+    KeyPrefix = ""
+    AccessKeyEnvironment = OPENSIM_S3_ACCESS_KEY_ID
+    SecretKeyEnvironment = OPENSIM_S3_SECRET_ACCESS_KEY
+
+    ReadOnly = true
+    AllowMetadataDelete = false
+    ; Dedicated LOCAL disk directory, exclusive to this ROBUST process.
+    ; Do not point at an authoritative asset directory, or use symlinks into it.
+    CacheDirectory = "/var/cache/opensim/s3-assets-canary"
+    CacheMaxBytes = 10737418240
+    MaxAssetBytes = 67108864
+    RequestTimeoutSeconds = 30
+    MaxRetries = 2
+    MaxConcurrentRequests = 16
+
+    ; Optional read-only fallbacks for files not copied to the bucket yet.
+    ; They are used only after genuine cloud object misses, not on cloud errors.
+    LegacyBaseDirectory = "/playground/fsassets/data"
+    LegacySpoolDirectory = "/playground/fsassets/tmp"
+    ; During a live import, keep filesystem fallback out of the R2 cache and
+    ; allow exact-hash recovery of known legacy object XML on filesystem reads.
+    MigrationMode = false

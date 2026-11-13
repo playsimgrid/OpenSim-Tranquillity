@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile new PlaySim assets into R2 after each completed import
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+Unit=playsim-r2-import.service
+
+[Install]
+WantedBy=timers.target

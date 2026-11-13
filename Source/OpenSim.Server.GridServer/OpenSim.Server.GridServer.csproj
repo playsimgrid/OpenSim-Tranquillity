@@ -58,6 +58,7 @@
     <ProjectReference Include="../../Source/OpenSim.Services.EstateService/OpenSim.Services.EstateService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.ExperienceService/OpenSim.Services.ExperienceService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.FSAssetService/OpenSim.Services.FSAssetService.csproj" />
+    <ProjectReference Include="../../Source/OpenSim.Services.S3AssetService/OpenSim.Services.S3AssetService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.FreeswitchService/OpenSim.Services.FreeswitchService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.Friends/OpenSim.Services.FriendsService.csproj" />
     <ProjectReference Include="../../Source/OpenSim.Services.GridService/OpenSim.Services.GridService.csproj" />

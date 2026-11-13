@@ -1,0 +1,33 @@
+[Unit]
+Description=PlaySim FSAssets to R2 verified import
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+User=azdesign
+Group=azdesign
+EnvironmentFile=/etc/playsim-r2/credentials.env
+ExecStart=/usr/bin/python3 -u /opt/playsim-r2/import_assets.py
+TimeoutStartSec=infinity
+TimeoutStopSec=240
+Restart=on-failure
+RestartSec=300
+RestartPreventExitStatus=2
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=150%
+MemoryMax=2G
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/srv/grid-assets
+ReadWritePaths=/var/lib/playsim-r2
+
+[Install]
+WantedBy=multi-user.target
