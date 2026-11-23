@@ -1019,7 +1019,7 @@ public class Meshmerizer : IMesher, INonSharedRegionModule
 
     public IMesh CreateMesh(String primName, PrimitiveBaseShape primShape, Vector3 size, float lod, bool isPhysical, bool shouldCache, bool convex, bool forOde)
     {
-        return CreateMesh(primName, primShape, size, lod, false);
+        return CreateMesh(primName, primShape, size, lod, isPhysical, shouldCache);
     }
 
     public IMesh CreateMesh(String primName, PrimitiveBaseShape primShape, Vector3 size, float lod, bool isPhysical)
