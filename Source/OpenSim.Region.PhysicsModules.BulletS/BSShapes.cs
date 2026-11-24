@@ -115,6 +115,18 @@ public abstract class BSShape
     public BulletShape physShapeInfo { get; set; }
     public ShapeInfoInfo shapeInfo { get; private set; }
 
+    // Where this instance is kept in its own class's static shape cache.
+    // Recorded when the instance is added to that cache so that Dereference can find
+    //    and remove its own entry instead of guessing from physShapeInfo.shapeKey,
+    //    which is overwritten with a fixed key when meshing fails and a filler shape
+    //    is substituted (see VerifyMeshCreated).
+    protected System.UInt64 cacheKey = 0;
+    protected bool isCached = false;
+    // Set once if this instance is dereferenced more often than it was referenced.
+    // Such an instance is never freed: an unbalanced count means somebody may still
+    //    be holding the shape, and leaking it is survivable where freeing it is not.
+    protected bool referenceCountUnbalanced = false;
+
     public BSShape()
     {
         referenceCount = 1;
@@ -147,6 +159,61 @@ public abstract class BSShape
     {
         referenceCount--;
         lastReferenced = DateTime.Now;
+    }
+
+    // Release a reference that was taken only so that another shape could be built out
+    //    of this one (BSShapeHull's HACD path and BSShapeConvexHull's base mesh).
+    // The shape the caller just built may still point at this one's vertex data: whether
+    //    the native BuildHullShapeFromMesh/BuildConvexHullShapeFromMesh copy their input
+    //    is not established anywhere in this tree, and the managed BSAPIXNA versions are
+    //    stubs. So this drops the count the way every Dereference did up to and including
+    //    1.0.49.11 -- no eviction, no free -- and the entry stays reusable.
+    public virtual void DereferenceForDerived(BSScene physicsScene)
+    {
+        Dereference(physicsScene);
+    }
+
+    // True when this instance holds the last reference to its shape and freeing it is safe.
+    // Called with the owning cache locked.
+    protected bool ShouldFreeNow(BSScene physicsScene, string logName)
+    {
+        if (referenceCount > 0)
+            return false;
+        if (referenceCount < 0 && !referenceCountUnbalanced)
+        {
+            referenceCountUnbalanced = true;
+            physicsScene.Logger.WarnFormat("{0} {1} dereferenced more often than referenced (count={2}). Shape kept.",
+                                        LogHeader, logName, referenceCount);
+            physicsScene.DetailLog("{0},{1}.Dereference,unbalancedCount,count={2},shape={3}",
+                                        BSScene.DetailLogZero, logName, referenceCount, this);
+        }
+        if (referenceCountUnbalanced)
+            return false;
+        return BSParam.ShouldFreeUnusedShapes;
+    }
+
+    // Free the native Bullet shape behind this wrapper.
+    // Called at taint-time only (every Dereference caller is taint-time: see
+    //    BSPrim.CreateGeomAndObject's "Called at taint-time!!!" and the TaintedObject
+    //    wrappers in BSPrim.Destroy and BSCharacter.Destroy), with the cache locked.
+    // Procedural 'native' shapes are deliberately NOT freed here. A native filler shape
+    //    is handed out by reference to other wrappers while an asset is fetched
+    //    (BSShapeConvexHull.GetReference assigns baseMesh.physShapeInfo straight into the
+    //    convex hull), and BSShapeNative.Dereference is what owns and frees them.
+    protected void FreeCachedPhysicalShape(BSScene physicsScene, string logName)
+    {
+        if (physShapeInfo == null || !physShapeInfo.HasPhysicalShape)
+            return;
+        if (physShapeInfo.isNativeShape)
+        {
+            physicsScene.DetailLog("{0},{1}.Dereference,keepNativeFiller,shape={2}",
+                                        BSScene.DetailLogZero, logName, this);
+            return;
+        }
+        physicsScene.DetailLog("{0},{1}.Dereference,freeShape,shape={2}",
+                                        BSScene.DetailLogZero, logName, this);
+        physicsScene.PE.DeleteCollisionShape(physicsScene.World, physShapeInfo);
+        physShapeInfo.Clear();
     }
 
     // Release the use of a physical shape.
@@ -470,6 +537,8 @@ public class BSShapeMesh : BSShape
                     // If a mesh was what was created, remember the built shape for later sharing.
                     // Also note that if meshing failed we put it in the mesh list as there is nothing else to do about the mesh.
                     Meshes.Add(newMeshKey, retMesh);
+                    retMesh.cacheKey = newMeshKey;
+                    retMesh.isCached = true;
                 }
 
                 retMesh.physShapeInfo = newShape;
@@ -501,9 +570,36 @@ public class BSShapeMesh : BSShape
         lock (Meshes)
         {
             this.DecrementReference();
-            physicsScene.DetailLog("{0},BSShapeMesh.Dereference,shape={1}", BSScene.DetailLogZero, this);
-            // TODO: schedule aging and destruction of unused meshes.
+            physicsScene.DetailLog("{0},BSShapeMesh.Dereference,shape={1},refs={2}",
+                                        BSScene.DetailLogZero, this, referenceCount);
+            if (!ShouldFreeNow(physicsScene, "BSShapeMesh"))
+                return;
+            RemoveOwnCacheEntry();
+            FreeCachedPhysicalShape(physicsScene, "BSShapeMesh");
         }
+    }
+    // Drop the reference the hull and convex hull builders take on a base mesh without
+    //    evicting or freeing it. See BSShape.DereferenceForDerived.
+    public override void DereferenceForDerived(BSScene physicsScene)
+    {
+        lock (Meshes)
+        {
+            this.DecrementReference();
+            physicsScene.DetailLog("{0},BSShapeMesh.DereferenceForDerived,shape={1},refs={2}",
+                                        BSScene.DetailLogZero, this, referenceCount);
+        }
+    }
+    // Remove this instance's own entry from Meshes, and only its own: a rebuild under the
+    //    same key can have replaced the entry with a different instance.
+    // Caller holds the Meshes lock.
+    private void RemoveOwnCacheEntry()
+    {
+        if (!isCached)
+            return;
+        BSShapeMesh cached;
+        if (Meshes.TryGetValue(cacheKey, out cached) && object.ReferenceEquals(cached, this))
+            Meshes.Remove(cacheKey);
+        isCached = false;
     }
     // Loop through all the known meshes and return the description based on the physical address.
     public static bool TryGetMeshByPtr(BulletShape pShape, out BSShapeMesh outMesh)
@@ -666,6 +762,8 @@ public class BSShapeHull : BSShape
                 {
                     // If a mesh was what was created, remember the built shape for later sharing.
                     Hulls.Add(newHullKey, retHull);
+                    retHull.cacheKey = newHullKey;
+                    retHull.isCached = true;
                 }
                 retHull.physShapeInfo = newShape;
             }
@@ -696,8 +794,18 @@ public class BSShapeHull : BSShape
         lock (Hulls)
         {
             this.DecrementReference();
-            physicsScene.DetailLog("{0},BSShapeHull.Dereference,shape={1}", BSScene.DetailLogZero, this);
-            // TODO: schedule aging and destruction of unused meshes.
+            physicsScene.DetailLog("{0},BSShapeHull.Dereference,shape={1},refs={2}",
+                                        BSScene.DetailLogZero, this, referenceCount);
+            if (!ShouldFreeNow(physicsScene, "BSShapeHull"))
+                return;
+            if (isCached)
+            {
+                BSShapeHull cached;
+                if (Hulls.TryGetValue(cacheKey, out cached) && object.ReferenceEquals(cached, this))
+                    Hulls.Remove(cacheKey);
+                isCached = false;
+            }
+            FreeCachedPhysicalShape(physicsScene, "BSShapeHull");
         }
     }
 
@@ -803,7 +911,7 @@ public class BSShapeHull : BSShape
                 BSShapeMesh maybeMesh = meshShape as BSShapeMesh;
                 if (maybeMesh != null)
                     shapeInfo.SetVerticesPerHull(0, maybeMesh.shapeInfo.Vertices);
-                meshShape.Dereference(physicsScene);
+                meshShape.DereferenceForDerived(physicsScene);
             }
             physicsScene.DetailLog("{0},BSShapeHull.CreatePhysicalHull,bulletHACD,exit,hasBody={1}", prim.LocalID, newShape.HasPhysicalShape);
         }
@@ -1146,12 +1254,14 @@ public class BSShapeConvexHull : BSShape
                     convexShape = physicsScene.PE.BuildConvexHullShapeFromMesh(physicsScene.World, baseMesh.physShapeInfo);
                     convexShape.shapeKey = newMeshKey;
                     ConvexHulls.Add(convexShape.shapeKey, retConvexHull);
+                    retConvexHull.cacheKey = convexShape.shapeKey;
+                    retConvexHull.isCached = true;
                     physicsScene.DetailLog("{0},BSShapeConvexHull.GetReference,addingNewlyCreatedShape,shape={1}",
                                         BSScene.DetailLogZero, convexShape);
                 }
 
                 // Done with the base mesh
-                baseMesh.Dereference(physicsScene);
+                baseMesh.DereferenceForDerived(physicsScene);
 
                 retConvexHull.physShapeInfo = convexShape;
             }
@@ -1171,8 +1281,18 @@ public class BSShapeConvexHull : BSShape
         lock (ConvexHulls)
         {
             this.DecrementReference();
-            physicsScene.DetailLog("{0},BSShapeConvexHull.Dereference,shape={1}", BSScene.DetailLogZero, this);
-            // TODO: schedule aging and destruction of unused meshes.
+            physicsScene.DetailLog("{0},BSShapeConvexHull.Dereference,shape={1},refs={2}",
+                                        BSScene.DetailLogZero, this, referenceCount);
+            if (!ShouldFreeNow(physicsScene, "BSShapeConvexHull"))
+                return;
+            if (isCached)
+            {
+                BSShapeConvexHull cached;
+                if (ConvexHulls.TryGetValue(cacheKey, out cached) && object.ReferenceEquals(cached, this))
+                    ConvexHulls.Remove(cacheKey);
+                isCached = false;
+            }
+            FreeCachedPhysicalShape(physicsScene, "BSShapeConvexHull");
         }
     }
     // Loop through all the known hulls and return the description based on the physical address.
@@ -1242,6 +1362,8 @@ public class BSShapeGImpact : BSShape
                     // Also note that if meshing failed we put it in the mesh list as there is nothing
                     //         else to do about the mesh.
                     GImpacts.Add(newMeshKey, retGImpact);
+                    retGImpact.cacheKey = newMeshKey;
+                    retGImpact.isCached = true;
                 }
 
                 retGImpact.physShapeInfo = newShape;
@@ -1285,8 +1407,18 @@ public class BSShapeGImpact : BSShape
         lock (GImpacts)
         {
             this.DecrementReference();
-            physicsScene.DetailLog("{0},BSShapeGImpact.Dereference,shape={1}", BSScene.DetailLogZero, this);
-            // TODO: schedule aging and destruction of unused meshes.
+            physicsScene.DetailLog("{0},BSShapeGImpact.Dereference,shape={1},refs={2}",
+                                        BSScene.DetailLogZero, this, referenceCount);
+            if (!ShouldFreeNow(physicsScene, "BSShapeGImpact"))
+                return;
+            if (isCached)
+            {
+                BSShapeGImpact cached;
+                if (GImpacts.TryGetValue(cacheKey, out cached) && object.ReferenceEquals(cached, this))
+                    GImpacts.Remove(cacheKey);
+                isCached = false;
+            }
+            FreeCachedPhysicalShape(physicsScene, "BSShapeGImpact");
         }
     }
     // Loop through all the known hulls and return the description based on the physical address.

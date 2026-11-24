@@ -99,6 +99,7 @@ public static class BSParam
     public static bool ShouldUseSingleConvexHullForPrims { get; set; }
     public static bool ShouldUseGImpactShapeForPrims { get; set; }
     public static bool ShouldUseAssetHulls { get; set; }
+    public static bool ShouldFreeUnusedShapes { get; set; }
 
     public static float TerrainImplementation { get; set; }
     public static int TerrainMeshMagnification { get; private set; }
@@ -451,6 +452,8 @@ public static class BSParam
         new ParameterDefn<bool>("ShouldUseGImpactShapeForPrims", "If true, use a GImpact shape for prims with cuts and twists",
             false ),
         new ParameterDefn<bool>("ShouldUseAssetHulls", "If true, use hull if specified in the mesh asset info",
+            true ),
+        new ParameterDefn<bool>("ShouldFreeUnusedShapes", "If true, free a cached mesh/hull/convex hull/GImpact shape once nothing references it",
             true ),
 
         new ParameterDefn<int>("CrossingFailuresBeforeOutOfBounds", "How forgiving we are about getting into adjactent regions",
